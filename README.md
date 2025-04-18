@@ -1,17 +1,18 @@
 # 🧪 vanity-osmo
 
 **vanity-osmo** is a blazing-fast vanity address generator for the **Osmosis blockchain** (`osmo1...`).  
-It uses **GPU acceleration via CUDA** and supports matching prefixes and suffixes.
+It uses **GPU acceleration via CUDA** and optionally **parallel CPU filtering**.
 
 ---
 
 ## 🚀 Features
 
 - ✅ Generate Osmosis addresses with custom prefix and/or suffix  
-- ⚡ GPU-accelerated using PyCUDA + SHA256 + RIPEMD160  
+- ⚡ GPU-accelerated with PyCUDA  
+- 🧵 Optional CPU multiprocessing for filtering (via `--pool`)  
+- 🔐 Control key entropy strength (128–256 bits)  
 - 🔥 Real-time speed and temperature display (CPU/GPU)  
-- 📦 Installable via `.deb` package  
-- 🧠 Output includes mnemonic, private key, and address  
+- 🧠 Optional mnemonic support (can be disabled)  
 - 🛑 Graceful exit with `Ctrl+C`  
 
 ---
@@ -21,7 +22,7 @@ It uses **GPU acceleration via CUDA** and supports matching prefixes and suffixe
 - Python 3.8+
 - CUDA-compatible GPU (NVIDIA)
 - PyCUDA (`pip install pycuda`)
-- Other Python dependencies (see `requirements.txt`)
+- Other dependencies listed in `requirements.txt`
 
 Install all requirements:
 
@@ -33,20 +34,25 @@ pip install -r requirements.txt
 
 ## 💻 Usage
 
-Once installed:
-
 ```bash
 vanity-osmo --prefix osmo1aaa --batch 200000
 ```
 
 ### Arguments
 
-| Option       | Description                          |
-|--------------|--------------------------------------|
-| `--prefix`   | Address must start with this string  |
-| `--suffix`   | Address must end with this string    |
-| `--batch`    | Number of keys to generate per GPU batch |
-| `--output`   | Where to save result JSON (default: `osmo_gpu_found.json`) |
+| Option             | Description |
+|--------------------|-------------|
+| `--prefix`         | Address must start with this string |
+| `--suffix`         | Address must end with this string |
+| `--batch`          | Keys per GPU batch |
+| `--count`          | Stop after finding N matches (default: 1) |
+| `--output`         | Save result JSON file (default: `osmo_gpu_found.json`) |
+| `--strength`       | Key entropy strength: 128, 160, 192, 224, 256 (default: 256) |
+| `--pool`           | Enable multiprocessing (CPU) for address filtering |
+| `--pool-workers`   | Number of CPU processes if `--pool` is enabled (default: 2) |
+| `--list-gpus`      | Show available GPUs |
+| `--benchmark`      | Measure GPU key generation speed |
+| `--version`        | Print version and exit |
 
 ---
 
@@ -54,50 +60,51 @@ vanity-osmo --prefix osmo1aaa --batch 200000
 
 ```
 ✅ Found!
-🔗 Address     : osmo1aaa4v3smu4n9...
-🔐 Private Key : abc123...
-🧠 Mnemonic    : pause honey canoe ...
-🔁 Attempts    : 28,376
-⚡ Speed       : 3,112.43 addr/sec
-⏱ Time        : 9.11 sec
-💾 Saved to osmo_gpu_found.json
+🔗 Address     : osmo1aaa8xyh...
+🔐 Private Key : 0c32bc12...
+🔁 Attempts    : 45,172
+⚡ Speed       : 3,000.21 addr/sec
+⏱ Time        : 15.06 sec
+💾 Saved 1 result(s) to osmo_gpu_found.json
 ```
 
 ---
 
-## 📦 Build `.deb` installer (for Debian/Ubuntu)
+## 📦 Build `.deb` installer (optional)
 
-### 1. Create directory structure
+You can package this project as a Debian `.deb` file for easy distribution.
+
+### 1. Prepare structure
 
 ```bash
-mkdir -p vanity-osmo_1.0.0/DEBIAN
-mkdir -p vanity-osmo_1.0.0/usr/bin
-mkdir -p vanity-osmo_1.0.0/opt/vanity-osmo
+mkdir -p vanity-osmo_1.0.3/DEBIAN
+mkdir -p vanity-osmo_1.0.3/usr/bin
+mkdir -p vanity-osmo_1.0.3/opt/vanity-osmo
 ```
 
-### 2. Copy files into package
+### 2. Copy project files
 
 ```bash
-cp main.py kernel_*.cu temps.py requirements.txt vanity-osmo_1.0.0/opt/vanity-osmo/
+cp main.py kernel_*.cu requirements.txt vanity-osmo_1.0.3/opt/vanity-osmo/
 ```
 
-### 3. Create executable launcher
+### 3. Add executable wrapper
 
 ```bash
-cat <<EOF > vanity-osmo_1.0.0/usr/bin/vanity-osmo
+cat <<EOF > vanity-osmo_1.0.3/usr/bin/vanity-osmo
 #!/bin/bash
 python3 /opt/vanity-osmo/main.py "\$@"
 EOF
 
-chmod +x vanity-osmo_1.0.0/usr/bin/vanity-osmo
+chmod +x vanity-osmo_1.0.3/usr/bin/vanity-osmo
 ```
 
 ### 4. Create control file
 
 ```bash
-cat <<EOF > vanity-osmo_1.0.0/DEBIAN/control
+cat <<EOF > vanity-osmo_1.0.3/DEBIAN/control
 Package: vanity-osmo
-Version: 1.0.0
+Version: 1.0.3
 Section: utils
 Priority: optional
 Architecture: all
@@ -106,38 +113,31 @@ Description: GPU vanity address generator for Osmosis
 EOF
 ```
 
-### 5. (Optional) Post-install to auto-install Python deps
+### 5. Add post-install script (optional)
 
 ```bash
-cat <<EOF > vanity-osmo_1.0.0/DEBIAN/postinst
+cat <<EOF > vanity-osmo_1.0.3/DEBIAN/postinst
 #!/bin/bash
 pip3 install -r /opt/vanity-osmo/requirements.txt
 exit 0
 EOF
 
-chmod +x vanity-osmo_1.0.0/DEBIAN/postinst
+chmod +x vanity-osmo_1.0.3/DEBIAN/postinst
 ```
 
-### 6. Build the .deb package
+### 6. Build the `.deb`
 
 ```bash
-dpkg-deb --build vanity-osmo_1.0.0
+dpkg-deb --build vanity-osmo_1.0.3
 ```
-
-This creates: `vanity-osmo_1.0.0.deb`
 
 ---
 
-## 📥 Install
+## 📥 Install & Use
 
 ```bash
-sudo dpkg -i vanity-osmo_1.0.0.deb
-```
-
-After that, use:
-
-```bash
-vanity-osmo --prefix osmo1cool --batch 100000
+sudo dpkg -i vanity-osmo_1.0.3.deb
+vanity-osmo --prefix osmo1abc --pool --pool-workers 4
 ```
 
 ---

@@ -1,9 +1,6 @@
 pycuda
 numpy
 ecdsa
-mnemonic
-bip_utils
 psutil
 GPUtil
 bech32
-
