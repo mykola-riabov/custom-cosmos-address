@@ -12,8 +12,7 @@ It uses **GPU acceleration via CUDA** and optionally **parallel CPU filtering**.
 - 🧵 Optional CPU multiprocessing for filtering (via `--pool`)  
 - 🔐 Control key entropy strength (128–256 bits)  
 - 🔥 Real-time speed and temperature display (CPU/GPU)  
-- 🧠 Optional mnemonic support (can be disabled)  
-- 🛑 Graceful exit with `Ctrl+C`  
+- 🧠 Optional mnemonic support (can be disabled)
 
 ---
 
