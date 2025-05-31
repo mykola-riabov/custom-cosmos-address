@@ -1,4 +1,3 @@
-pycuda
 numpy
 ecdsa
 psutil
