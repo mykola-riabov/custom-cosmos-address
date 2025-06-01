@@ -30,7 +30,7 @@ ALLOWED_STRENGTHS = [128, 160, 192, 224, 256]
 # === Argument parser ===
 parser = argparse.ArgumentParser(
     description=(
-        "custom-cosmos is a CPU vanity address generator for Cosmos-based chains (e.g., osmo1..., cosmos1..., inj1...).\n\n"
+        "custom-cosmos is a CPU custom address generator for Cosmos-based chains (e.g., osmo1..., cosmos1..., inj1...).\n\n"
         "It supports:\n"
         " - Fast random key generation (default mode)\n"
         " - Optional BIP39 mnemonic generation (--mnemonic)\n"
@@ -47,7 +47,7 @@ parser = argparse.ArgumentParser(
 parser.add_argument("--prefix", type=str, default="osmo1", help="Address must start with this string. Default: osmo1")
 parser.add_argument("--suffix", type=str, default="", help="Address must end with this string.")
 parser.add_argument("--batch", type=int, default=100_00, help="Keys per CPU batch")
-parser.add_argument("--output", type=str, default="osmo_cpu_found.json", help="Output JSON file")
+parser.add_argument("--output", type=str, default="addr_list.json", help="Output JSON file")
 parser.add_argument("--count", type=int, default=1, help="Number of matching addresses to find before stopping")
 parser.add_argument("--strength", type=int, default=256, choices=ALLOWED_STRENGTHS, help="Entropy strength in bits")
 parser.add_argument("--pool", action="store_true", help="Enable multiprocessing for filtering")
@@ -155,7 +155,7 @@ STRENGTH = args.strength
 USE_POOL = args.pool
 POOL_WORKERS = args.pool_workers
 
-print(f"🚀 Starting CPU vanity search")
+print(f"🚀 Start searching for a custom address")
 print(f"🔹 Prefix  : {PREFIX}")
 print(f"🔹 Suffix  : {SUFFIX or '(none)'}")
 print(f"🔐 Strength: {STRENGTH} bits")
