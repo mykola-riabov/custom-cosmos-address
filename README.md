@@ -113,10 +113,6 @@ You can change the path to generate addresses compatible with other networks (e.
 
 ---
 
-## 📤 Uninstall
-
-Simply delete the project files. No installation is required.
-
 ## 🔐 Entropy Strength and Mnemonic Word Count
 
 When using `--mnemonic`, the entropy strength directly determines the number of words in the generated phrase:
@@ -132,3 +128,26 @@ When using `--mnemonic`, the entropy strength directly determines the number of 
 For example, `--strength 256 --mnemonic` will generate a 24-word phrase.
 
 If `--mnemonic` is **not** used, the entropy still defines the size of the raw private key in bits.
+
+---
+
+## 🔎 Osmosis Address Scanner (`scan.py`)
+
+This script scans all generated JSON files and checks each address for a **non-zero OSMO balance**.
+
+- ✅ Works only with `osmo1...` addresses
+- 🔍 Queries the Osmosis LCD endpoint for each address
+- 💾 Saves found addresses with OSMO to `found_wallets/`
+
+### 🔧 Example:
+
+```bash
+python3 scan.py
+```
+
+The script will:
+- Find all `*.json` files with generated addresses
+- Query each address via `https://lcd.osmosis.zone`
+- Save matches in files like `found_wallets/found_from_<source>.json`
+
+📌 This script is useful to **discover existing OSMO on random or recycled keys**.
