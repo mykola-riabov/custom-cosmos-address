@@ -10,6 +10,7 @@
 - 🔐 Configurable entropy strength (128–256 bits)
 - 🧵 Optional CPU multiprocessing for address filtering
 - 🧠 Optional BIP39 mnemonic phrase generation (`--mnemonic`)
+- 🧭 Custom derivation path support (e.g. `m/44'/118'/0'/0/0`)
 - 🔥 Real-time speed and CPU temperature display
 - 💾 Save results as JSON (with optional mnemonic)
 
@@ -57,6 +58,28 @@ If you use the `--mnemonic` flag:
 
 ---
 
+## 🧭 What is a derivation path?
+
+A derivation path defines **how an address is generated from a mnemonic**. It is used in HD wallets like Keplr, Ledger, and Metamask to organize multiple addresses from a single seed.
+
+The default path in Cosmos is:
+
+```
+m/44'/118'/0'/0/0
+```
+
+| Segment          | Meaning                          |
+|------------------|----------------------------------|
+| `44'`            | BIP44 standard                   |
+| `118'`           | Cosmos coin type                 |
+| `0'`             | Account index (0 = first account)|
+| `0`              | External chain (0 = receive)     |
+| `0`              | Address index (0 = first address)|
+
+You can change the path to generate addresses compatible with other networks (e.g., `60'` for Ethereum-based chains like Injective).
+
+---
+
 ## 🔧 Command-Line Arguments
 
 | Option            | Description |
@@ -93,3 +116,19 @@ If you use the `--mnemonic` flag:
 ## 📤 Uninstall
 
 Simply delete the project files. No installation is required.
+
+## 🔐 Entropy Strength and Mnemonic Word Count
+
+When using `--mnemonic`, the entropy strength directly determines the number of words in the generated phrase:
+
+| Entropy Bits | Mnemonic Words |
+|--------------|----------------|
+| 128          | 12             |
+| 160          | 15             |
+| 192          | 18             |
+| 224          | 21             |
+| 256          | 24             |
+
+For example, `--strength 256 --mnemonic` will generate a 24-word phrase.
+
+If `--mnemonic` is **not** used, the entropy still defines the size of the raw private key in bits.
