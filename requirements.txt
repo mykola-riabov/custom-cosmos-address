@@ -1,5 +1,6 @@
-numpy
 ecdsa
 psutil
 GPUtil
 bech32
+mnemonic
+bip32

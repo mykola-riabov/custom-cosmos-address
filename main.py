@@ -7,52 +7,97 @@ import time
 import signal
 import numpy as np
 import multiprocessing as mp
+import hmac
+import binascii
 
 try:
     import ecdsa
     import hashlib
     from bech32 import bech32_encode, convertbits
+    from mnemonic import Mnemonic
+    from bip32 import BIP32
     import GPUtil
     import psutil
 except ImportError as e:
     print(f"❌ Missing dependency: {e.name}")
     sys.exit(1)
 
-VERSION = "1.0.4-cpu"
+VERSION = "1.0.7-cpu"
+HARDENED_OFFSET = 0x80000000
 ALLOWED_BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 ALLOWED_STRENGTHS = [128, 160, 192, 224, 256]
 
 # === Argument parser ===
-parser = argparse.ArgumentParser(description="CPU vanity address generator for Osmosis (Bech32 format osmo1...)")
-parser.add_argument("--prefix", type=str, default="osmo1", help="Address must start with this string.")
+parser = argparse.ArgumentParser(
+    description=(
+        "custom-cosmos is a CPU vanity address generator for Cosmos-based chains (e.g., osmo1..., cosmos1..., inj1...).\n\n"
+        "It supports:\n"
+        " - Fast random key generation (default mode)\n"
+        " - Optional BIP39 mnemonic generation (--mnemonic)\n"
+        " - Custom derivation paths (--path)\n\n"
+        "⚠️ By default, uses path: m/44'/118'/0'/0/0 (standard for Keplr and Cosmos SDK chains)\n"
+        "📌 Examples:\n"
+        "  --prefix osmo1xqz --mnemonic\n"
+        "  --prefix cosmos1gpt\n"
+        "  --prefix inj1abc --mnemonic --path \"m/44'/60'/0'/0/0\""
+    ),
+    formatter_class=argparse.RawTextHelpFormatter
+)
+
+parser.add_argument("--prefix", type=str, default="osmo1", help="Address must start with this string. Default: osmo1")
 parser.add_argument("--suffix", type=str, default="", help="Address must end with this string.")
-parser.add_argument("--batch", type=int, default=100_00, help="Keys per batch")
+parser.add_argument("--batch", type=int, default=100_00, help="Keys per CPU batch")
 parser.add_argument("--output", type=str, default="osmo_cpu_found.json", help="Output JSON file")
 parser.add_argument("--count", type=int, default=1, help="Number of matching addresses to find before stopping")
 parser.add_argument("--strength", type=int, default=256, choices=ALLOWED_STRENGTHS, help="Entropy strength in bits")
 parser.add_argument("--pool", action="store_true", help="Enable multiprocessing for filtering")
-parser.add_argument("--pool-workers", type=int, default=2, help="Number of processes for filtering")
-parser.add_argument("--version", action="store_true", help="Show version and exit")
+parser.add_argument("--pool-workers", type=int, default=2, help="Number of CPU processes for filtering")
+parser.add_argument("--mnemonic", action="store_true", help="Generate from BIP39 mnemonic instead of random key")
+parser.add_argument("--path", type=str, default="m/44'/118'/0'/0/0", help="Derivation path for --mnemonic (default: Keplr/Cosmos)")
+parser.add_argument("--version", action="store_true", help="Print version and exit")
 args = parser.parse_args()
 
 if args.version:
-    print(f"vanity-osmo (CPU-only) version {VERSION}")
+    print(f"custom-cosmos (CPU-only) version {VERSION}")
     sys.exit(0)
 
 # === Bech32 validation ===
 def check_bech32(part: str):
     return [ch for ch in part if ch not in ALLOWED_BECH32]
 
-prefix_body = args.prefix.replace("osmo1", "")
+prefix_body = args.prefix.split("1", 1)[-1]
 invalid_chars = set(check_bech32(prefix_body) + check_bech32(args.suffix))
 if invalid_chars:
     print(f"❌ Invalid character(s) in --prefix/--suffix: {', '.join(invalid_chars)}")
     print(f"💡 Allowed Bech32 characters: {ALLOWED_BECH32}")
     sys.exit(1)
 
+# === Mnemonic-based key derivation ===
+def mnemonic_to_privkey(strength_bits: int, derivation_path: str):
+    mnemo = Mnemonic("english")
+    entropy_bytes = os.urandom(strength_bits // 8)
+    words = mnemo.to_mnemonic(entropy_bytes)
+    seed = mnemo.to_seed(words)
+
+    bip32 = BIP32.from_seed(seed)
+    path = derivation_path.lstrip("m/").split("/")
+    path = [int(p.replace("'", "")) + HARDENED_OFFSET if "'" in p else int(p) for p in path]
+
+    privkey = bip32.get_privkey_from_path(path)
+    return privkey, words
+
 # === Key generator ===
 def generate_keys_cpu(batch_size: int, strength_bits: int):
-    return [os.urandom(strength_bits // 8) for _ in range(batch_size)]
+    keys = []
+    mnemonics = []
+    if args.mnemonic:
+        for _ in range(batch_size):
+            privkey, words = mnemonic_to_privkey(strength_bits, args.path)
+            keys.append(privkey)
+            mnemonics.append(words)
+        return keys, mnemonics
+    else:
+        return [os.urandom(strength_bits // 8) for _ in range(batch_size)], None
 
 # === Temperature display ===
 def get_temps():
@@ -76,7 +121,8 @@ def check_key(priv_bytes: bytes):
         pubkey = b'\x02' + vk.to_string()[:32] if vk.to_string()[-1] % 2 == 0 else b'\x03' + vk.to_string()[:32]
         h1 = hashlib.sha256(pubkey).digest()
         h2 = hashlib.new("ripemd160", h1).digest()
-        addr = bech32_encode("osmo", convertbits(h2, 8, 5))
+        hrp = args.prefix.split("1")[0]
+        addr = bech32_encode(hrp, convertbits(h2, 8, 5))
         if addr.startswith(args.prefix) and addr.endswith(args.suffix):
             return {
                 "address": addr,
@@ -115,6 +161,9 @@ print(f"🔹 Suffix  : {SUFFIX or '(none)'}")
 print(f"🔐 Strength: {STRENGTH} bits")
 print(f"📦 Batch   : {BATCH_SIZE:,} keys")
 print(f"🔁 Target  : {COUNT} match(es)")
+print(f"🧠 Mnemonic: {'enabled' if args.mnemonic else 'disabled'}")
+if args.mnemonic:
+    print(f"📍 Path    : {args.path}")
 if USE_POOL:
     print(f"🧵 Pool    : enabled with {POOL_WORKERS} process(es)\n")
 
@@ -125,27 +174,33 @@ last_log = start
 found = []
 
 while len(found) < COUNT:
-    keys = generate_keys_cpu(BATCH_SIZE, STRENGTH)
+    keys, mnemonics = generate_keys_cpu(BATCH_SIZE, STRENGTH)
     attempts += len(keys)
 
     if USE_POOL:
         with mp.Pool(processes=POOL_WORKERS) as pool:
-            for result in pool.imap_unordered(check_key, keys):
+            for i, result in enumerate(pool.imap_unordered(check_key, keys)):
                 if result:
                     found.append(result)
                     print(f"\n✅ Found!")
                     print(f"🔗 Address     : {result['address']}")
                     print(f"🔐 Private Key : {result['private_key']}")
+                    if args.mnemonic:
+                        print(f"🧠 Mnemonic    : {mnemonics[i]}")
+                        result["mnemonic"] = mnemonics[i]
                     if len(found) >= COUNT:
                         break
     else:
-        for priv in keys:
+        for i, priv in enumerate(keys):
             result = check_key(priv)
             if result:
                 found.append(result)
                 print(f"\n✅ Found!")
                 print(f"🔗 Address     : {result['address']}")
                 print(f"🔐 Private Key : {result['private_key']}")
+                if args.mnemonic:
+                    print(f"🧠 Mnemonic    : {mnemonics[i]}")
+                    result["mnemonic"] = mnemonics[i]
                 if len(found) >= COUNT:
                     break
 
