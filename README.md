@@ -1,6 +1,6 @@
 # 🧪 custom-osmo-address (CPU-only)
 
-**custom-osmo-address** is a fast vanity address generator for the **Osmosis blockchain** (`osmo1...`) that runs **entirely on the CPU**, with optional multiprocessing for filtering.
+**custom-osmo-address** is a fast custom address generator for the **Osmosis blockchain** (`osmo1...`) that runs **entirely on the CPU**, with optional multiprocessing for filtering.
 
 ---
 
