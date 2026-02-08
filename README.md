@@ -186,7 +186,3 @@ You are solely responsible for complying with applicable laws and regulations in
 
 ---
 
-## License
-
-MIT (or your preferred license)
-
