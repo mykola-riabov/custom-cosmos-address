@@ -1,25 +1,42 @@
-# 🧪 custom-cosmos-address (CPU-only)
+# custom-cosmos-address (CPU-only)
 
-**custom-cosmos-address** is a fast custom address generator for **Cosmos SDK-based blockchains** (`osmo1...`, `cosmos1...`, `inj1...`, etc.) that runs **entirely on the CPU**, with optional multiprocessing and BIP39 mnemonic support.
+`custom-cosmos-address` is a **CPU-based utility** for generating Cosmos SDK–compatible Bech32 addresses with a desired **prefix** and/or **suffix** (vanity addresses). It supports fast random-key generation as well as deterministic HD wallets via **BIP39 mnemonics** and derivation paths.
 
----
-
-## 🚀 Features
-
-- ✅ Generate Cosmos addresses with custom prefix and/or suffix
-- 🔐 Configurable entropy strength (128–256 bits)
-- 🧵 Optional CPU multiprocessing for address filtering
-- 🧠 Optional BIP39 mnemonic phrase generation (`--mnemonic`)
-- 🧭 Custom derivation path support (e.g. `m/44'/118'/0'/0/0`)
-- 🔥 Real-time speed and CPU temperature display
-- 💾 Save results as JSON (with optional mnemonic)
+> ⚠️ **SECURITY WARNING**
+> This tool **writes private keys** (and optionally **mnemonics**) to output files. These files are extremely sensitive.
+> **Never commit them to Git, never upload them to cloud storage, and never share them publicly.**
 
 ---
 
-## 🧰 Requirements
+## Features
 
-- Python 3.8+
-- Install dependencies:
+- Generate Cosmos addresses (`osmo1…`, `cosmos1…`, `inj1…`, etc.)
+- Vanity matching by:
+  - `--prefix` (address must start with a given string)
+  - `--suffix` (address must end with a given string)
+- Two generation modes:
+  - **Fast mode**: random private keys (maximum speed)
+  - **Mnemonic mode**: BIP39 + derivation path (deterministic, recoverable)
+- Multiprocessing support for address filtering
+- Streaming output (low memory usage)
+- Output formats:
+  - **JSONL** (default, recommended)
+  - **JSON array** (optional)
+- Output file rotation by number of found results
+
+---
+
+## Requirements
+
+- Python **3.10+** recommended
+- Typical dependencies:
+  - `ecdsa`
+  - `bech32`
+  - `mnemonic`
+  - `bip32`
+  - `psutil`
+
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
@@ -27,127 +44,149 @@ pip install -r requirements.txt
 
 ---
 
-## 💻 Example Usage
+## Quick Start
+
+### 1. Fast vanity address search (random private keys)
 
 ```bash
-# Fast generation using random private key (default mode)
-python3 main.py --prefix osmo1aaa --batch 100000 --pool --pool-workers 4
+python3 main.py --prefix osmo1abc --suffix xyz --batch 100000 --count 1
+```
 
-# Slower generation using BIP39 mnemonic phrase
-python3 main.py --prefix cosmos1gpt --mnemonic
+### 2. Fast mode with multiprocessing
 
-# With custom derivation path (e.g., Ethereum-style)
-python3 main.py --prefix inj1zzz --mnemonic --path "m/44'/60'/0'/0/0"
+```bash
+python3 main.py --prefix osmo1abc --batch 200000 --pool --pool-workers 4
+```
+
+### 3. Mnemonic (HD wallet) mode
+
+```bash
+python3 main.py --prefix cosmos1gpt --mnemonic --strength 256 --count 1
+```
+
+### 4. Custom derivation path (mnemonic mode only)
+
+```bash
+python3 main.py --prefix inj1zzz --mnemonic --path "m/44'/118'/0'/0/0"
 ```
 
 ---
 
-## ℹ️ Mnemonic vs. Random Private Key
+## Command-Line Arguments (`main.py`)
 
-By default, the tool generates addresses using random private keys via `os.urandom`, which is very fast and suitable for bulk searching.
-
-If you use the `--mnemonic` flag:
-- A BIP39-compliant mnemonic phrase is generated (e.g., 12 or 24 words).
-- From the mnemonic, a seed is created, and then a private key is derived **using the given `--path`** (default: `m/44'/118'/0'/0/0` — used by Keplr and Cosmos SDK).
-- The corresponding address is calculated from the derived key.
-- This process is significantly **slower** than direct key generation, but it allows you to **back up your address using the mnemonic**.
-
-⚠️ You **can create a private key from a mnemonic**, but you **cannot regenerate a mnemonic from a private key**.
-
-📌 If you do **not** use `--mnemonic`, the `--path` parameter is ignored — it only applies to HD-wallet key derivation.
-
----
-
-## 🧭 What is a derivation path?
-
-A derivation path defines **how an address is generated from a mnemonic**. It is used in HD wallets like Keplr, Ledger, and Metamask to organize multiple addresses from a single seed.
-
-The default path in Cosmos is:
-
-```
-m/44'/118'/0'/0/0
-```
-
-| Segment          | Meaning                          |
-|------------------|----------------------------------|
-| `44'`            | BIP44 standard                   |
-| `118'`           | Cosmos coin type                 |
-| `0'`             | Account index (0 = first account)|
-| `0`              | External chain (0 = receive)     |
-| `0`              | Address index (0 = first address)|
-
-You can change the path to generate addresses compatible with other networks (e.g., `60'` for Ethereum-based chains like Injective).
+| Argument | Description | Default |
+|--------|-------------|---------|
+| `--prefix` | Required address prefix | `osmo1` |
+| `--suffix` | Required address suffix | empty |
+| `--batch` | Keys generated per iteration | `10000` |
+| `--count` | Stop after N matches | `1` |
+| `--strength` | BIP39 entropy (128–256) | `128` |
+| `--mnemonic` | Enable BIP39 mnemonic mode | off |
+| `--path` | Derivation path (mnemonic mode) | `m/44'/118'/0'/0/0` |
+| `--pool` | Enable multiprocessing | off |
+| `--pool-workers` | Worker process count | `2` |
+| `--output` | Base output filename | `addr_list.jsonl` |
+| `--output-format` | `jsonl` or `json` | `jsonl` |
+| `--per-file` | Rotate file after N results (0 = single file) | `0` |
+| `--version` | Print version and exit | — |
 
 ---
 
-## 🔧 Command-Line Arguments
+## Output Format
 
-| Option            | Description |
-|-------------------|-------------|
-| `--prefix`        | Address must start with this string (e.g. `osmo1`, `cosmos1`, `inj1`) |
-| `--suffix`        | Address must end with this string |
-| `--batch`         | Keys per CPU batch |
-| `--count`         | Number of matching addresses to find |
-| `--strength`      | Key entropy strength: 128–256 bits |
-| `--output`        | Output file (default: `osmo_cpu_found.json`) |
-| `--pool`          | Enable multiprocessing for filtering |
-| `--pool-workers`  | Number of CPU processes (default: 2) |
-| `--mnemonic`      | Generate from BIP39 mnemonic (instead of random key) |
-| `--path`          | Derivation path for mnemonic (default: `m/44'/118'/0'/0/0`) |
-| `--version`       | Print version and exit |
+### JSONL (default)
 
----
+Each line is a standalone JSON object:
 
-## 📈 Example Output
-
-```
-✅ Found!
-🔗 Address     : cosmos1gptx8g...
-🔐 Private Key : 1f29a3...
-🧠 Mnemonic    : curious airport vintage filter exhibit ...
-🔁 Attempts    : 1,000,000
-⚡ Speed       : 12,345.67 addr/sec
-🧊 CPU         : 54.2°C
-💾 Saved 1 result(s) to osmo_cpu_found.json
+```json
+{"address":"osmo1…","private_key":"<hex>","mnemonic":"<optional>"}
 ```
 
----
+Advantages:
+- Stream-safe
+- Low memory usage
+- Ideal for large searches
 
-## 🔐 Entropy Strength and Mnemonic Word Count
+### JSON array (`--output-format json`)
 
-When using `--mnemonic`, the entropy strength directly determines the number of words in the generated phrase:
-
-| Entropy Bits | Mnemonic Words |
-|--------------|----------------|
-| 128          | 12             |
-| 160          | 15             |
-| 192          | 18             |
-| 224          | 21             |
-| 256          | 24             |
-
-For example, `--strength 256 --mnemonic` will generate a 24-word phrase.
-
-If `--mnemonic` is **not** used, the entropy still defines the size of the raw private key in bits.
+A single JSON array containing all results (built from streamed data).
 
 ---
 
-## 🔎 Osmosis Address Scanner (`scan.py`)
+## BIP39 Entropy Reference (Mnemonic Mode)
 
-This script scans all generated JSON files and checks each address for a **non-zero OSMO balance**.
+| Entropy | Words |
+|--------|-------|
+| 128-bit | 12 |
+| 160-bit | 15 |
+| 192-bit | 18 |
+| 224-bit | 21 |
+| 256-bit | 24 |
 
-- ✅ Works only with `osmo1...` addresses
-- 🔍 Queries the Osmosis LCD endpoint for each address
-- 💾 Saves found addresses with OSMO to `found_wallets/`
+---
 
-### 🔧 Example:
+## Osmosis Balance Scanner (`scan.py`)
+
+`scan.py` scans generated addresses for balances using a Cosmos LCD endpoint (e.g. Osmosis).
+
+### Run
 
 ```bash
 python3 scan.py
 ```
 
-The script will:
-- Find all `*.json` files with generated addresses
-- Query each address via `https://lcd.osmosis.zone`
-- Save matches in files like `found_wallets/found_from_<source>.json`
+### Environment Variables
 
-📌 This script is useful to **discover existing OSMO on random or recycled keys**.
+| Variable | Description | Default |
+|--------|-------------|---------|
+| `LCD_ENDPOINT` | LCD API endpoint | `https://lcd-osmosis.keplr.app` |
+| `DENOM` | Token denom | `uosmo` |
+| `INPUT_GLOB` | Input wallet files | `*.jsonl` |
+| `NUM_WORKERS` | Parallel HTTP workers | `20` |
+| `HTTP_TIMEOUT` | Request timeout (sec) | `10` |
+| `HTTP_RETRIES` | Retry count | `2` |
+| `RESULT_DIR` | Output directory | `found_wallets` |
+| `CACHE_FILE` | Checked-address cache | `checked_cache.json` |
+
+Example:
+
+```bash
+export INPUT_GLOB="addr_list*.jsonl"
+export NUM_WORKERS=50
+python3 scan.py
+```
+
+### Scanner Output
+
+- `found_wallets/found_from_<file>.jsonl` — addresses with balance > 0
+- `found_wallets/found_from_<file>.json` — JSON array version
+- `found_wallets/errors_from_<file>.log` — request errors
+- `checked_cache.json` — cache of successfully checked addresses
+
+---
+
+## Git Safety (Highly Recommended)
+
+Add the following to `.gitignore`:
+
+```gitignore
+*.jsonl
+*.json
+found_wallets/
+checked_cache.json
+```
+
+---
+
+## Legal & Ethical Notice
+
+This software is intended for **educational, research, and personal wallet management purposes only** (e.g. vanity address generation for your own keys, auditing your own datasets, recovery testing).
+
+You are solely responsible for complying with applicable laws and regulations in your jurisdiction.
+
+---
+
+## License
+
+MIT (or your preferred license)
+

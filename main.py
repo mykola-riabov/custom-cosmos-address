@@ -5,10 +5,7 @@ import os
 import sys
 import time
 import signal
-import numpy as np
 import multiprocessing as mp
-import hmac
-import binascii
 
 try:
     import ecdsa
@@ -16,7 +13,6 @@ try:
     from bech32 import bech32_encode, convertbits
     from mnemonic import Mnemonic
     from bip32 import BIP32
-    import GPUtil
     import psutil
 except ImportError as e:
     print(f"❌ Missing dependency: {e.name}")
@@ -27,33 +23,31 @@ HARDENED_OFFSET = 0x80000000
 ALLOWED_BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 ALLOWED_STRENGTHS = [128, 160, 192, 224, 256]
 
-# === Argument parser ===
+# =============================================================================
+# Args
+# =============================================================================
 parser = argparse.ArgumentParser(
-    description=(
-        "custom-cosmos is a CPU custom address generator for Cosmos-based chains (e.g., osmo1..., cosmos1..., inj1...).\n\n"
-        "It supports:\n"
-        " - Fast random key generation (default mode)\n"
-        " - Optional BIP39 mnemonic generation (--mnemonic)\n"
-        " - Custom derivation paths (--path)\n\n"
-        "⚠️ By default, uses path: m/44'/118'/0'/0/0 (standard for Keplr and Cosmos SDK chains)\n"
-        "📌 Examples:\n"
-        "  --prefix osmo1xqz --mnemonic\n"
-        "  --prefix cosmos1gpt\n"
-        "  --prefix inj1abc --mnemonic --path \"m/44'/60'/0'/0/0\""
-    ),
+    description="custom-cosmos is a CPU custom address generator for Cosmos-based chains.",
     formatter_class=argparse.RawTextHelpFormatter
 )
 
 parser.add_argument("--prefix", type=str, default="osmo1", help="Address must start with this string. Default: osmo1")
 parser.add_argument("--suffix", type=str, default="", help="Address must end with this string.")
-parser.add_argument("--batch", type=int, default=100_00, help="Keys per CPU batch")
-parser.add_argument("--output", type=str, default="addr_list.json", help="Output JSON file")
+parser.add_argument("--batch", type=int, default=10_000, help="Keys per CPU batch")
+
+parser.add_argument("--output", type=str, default="addr_list.jsonl",
+                    help="Output base filename. Recommended: .jsonl (streaming).")
+parser.add_argument("--output-format", choices=["jsonl", "json"], default="jsonl",
+                    help="Write JSONL (streaming) or finalize JSON arrays from JSONL at end. Default: jsonl")
+parser.add_argument("--per-file", type=int, default=0,
+                    help="Rotate output after N FOUND results per file. 0 = single file.")
+
 parser.add_argument("--count", type=int, default=1, help="Number of matching addresses to find before stopping")
 parser.add_argument("--strength", type=int, default=256, choices=ALLOWED_STRENGTHS, help="Entropy strength in bits")
 parser.add_argument("--pool", action="store_true", help="Enable multiprocessing for filtering")
 parser.add_argument("--pool-workers", type=int, default=2, help="Number of CPU processes for filtering")
 parser.add_argument("--mnemonic", action="store_true", help="Generate from BIP39 mnemonic instead of random key")
-parser.add_argument("--path", type=str, default="m/44'/118'/0'/0/0", help="Derivation path for --mnemonic (default: Keplr/Cosmos)")
+parser.add_argument("--path", type=str, default="m/44'/118'/0'/0/0", help="Derivation path for --mnemonic")
 parser.add_argument("--version", action="store_true", help="Print version and exit")
 args = parser.parse_args()
 
@@ -61,7 +55,13 @@ if args.version:
     print(f"custom-cosmos (CPU-only) version {VERSION}")
     sys.exit(0)
 
-# === Bech32 validation ===
+if args.per_file < 0:
+    print("❌ --per-file must be >= 0")
+    sys.exit(1)
+
+# =============================================================================
+# Bech32 validation
+# =============================================================================
 def check_bech32(part: str):
     return [ch for ch in part if ch not in ALLOWED_BECH32]
 
@@ -72,7 +72,9 @@ if invalid_chars:
     print(f"💡 Allowed Bech32 characters: {ALLOWED_BECH32}")
     sys.exit(1)
 
-# === Mnemonic-based key derivation ===
+# =============================================================================
+# Mnemonic derivation
+# =============================================================================
 def mnemonic_to_privkey(strength_bits: int, derivation_path: str):
     mnemo = Mnemonic("english")
     entropy_bytes = os.urandom(strength_bits // 8)
@@ -83,23 +85,50 @@ def mnemonic_to_privkey(strength_bits: int, derivation_path: str):
     path = derivation_path.lstrip("m/").split("/")
     path = [int(p.replace("'", "")) + HARDENED_OFFSET if "'" in p else int(p) for p in path]
 
-    privkey = bip32.get_privkey_from_path(path)
+    privkey = bip32.get_privkey_from_path(path)  # 32 bytes
     return privkey, words
 
-# === Key generator ===
+# =============================================================================
+# Random privkey generator (FIX)
+# - strength controls input entropy, but output private key MUST be 32 bytes.
+# - ensure 1 <= priv_int < curve_order
+# =============================================================================
+_CURVE_ORDER = ecdsa.SECP256k1.order
+
+def random_privkey_from_entropy(strength_bits: int) -> bytes:
+    """
+    Produce a valid 32-byte secp256k1 private key from strength_bits of entropy.
+    For strength_bits < 256 we expand entropy deterministically using SHA256.
+    """
+    if strength_bits not in ALLOWED_STRENGTHS:
+        raise ValueError("Invalid strength_bits")
+
+    nbytes = strength_bits // 8
+
+    while True:
+        raw = os.urandom(nbytes)
+
+        # Expand to 32 bytes if needed
+        if len(raw) != 32:
+            raw = hashlib.sha256(raw).digest()  # 32 bytes
+
+        priv_int = int.from_bytes(raw, "big")
+        if 1 <= priv_int < _CURVE_ORDER:
+            return raw
+
 def generate_keys_cpu(batch_size: int, strength_bits: int):
-    keys = []
-    mnemonics = []
     if args.mnemonic:
+        keys = []
+        mnemonics = []
         for _ in range(batch_size):
             privkey, words = mnemonic_to_privkey(strength_bits, args.path)
             keys.append(privkey)
             mnemonics.append(words)
         return keys, mnemonics
     else:
-        return [os.urandom(strength_bits // 8) for _ in range(batch_size)], None
+        # IMPORTANT: always 32-byte privkeys (secp256k1 requirement)
+        return [random_privkey_from_entropy(strength_bits) for _ in range(batch_size)], None
 
-# === Temperature display ===
 def get_temps():
     cpu_temp = "-"
     try:
@@ -113,26 +142,93 @@ def get_temps():
         pass
     return cpu_temp
 
-# === Key filtering ===
-def check_key(priv_bytes: bytes):
+# =============================================================================
+# Address check
+# =============================================================================
+def _addr_from_priv(priv_bytes: bytes) -> str | None:
     try:
+        # priv_bytes must be 32 bytes here
         sk = ecdsa.SigningKey.from_string(priv_bytes, curve=ecdsa.SECP256k1)
         vk = sk.get_verifying_key()
-        pubkey = b'\x02' + vk.to_string()[:32] if vk.to_string()[-1] % 2 == 0 else b'\x03' + vk.to_string()[:32]
+        pub_raw = vk.to_string()
+        pubkey = (b"\x02" + pub_raw[:32]) if (pub_raw[-1] % 2 == 0) else (b"\x03" + pub_raw[:32])
         h1 = hashlib.sha256(pubkey).digest()
         h2 = hashlib.new("ripemd160", h1).digest()
         hrp = args.prefix.split("1")[0]
         addr = bech32_encode(hrp, convertbits(h2, 8, 5))
         if addr.startswith(args.prefix) and addr.endswith(args.suffix):
-            return {
-                "address": addr,
-                "private_key": priv_bytes.hex()
-            }
+            return addr
     except Exception:
         pass
     return None
 
-# === Interrupt handler ===
+def check_key_indexed(item: tuple[int, bytes]) -> tuple[int, str | None]:
+    idx, priv_bytes = item
+    return (idx, _addr_from_priv(priv_bytes))
+
+# =============================================================================
+# Streaming output with rotation (NO RAM growth)
+# =============================================================================
+def _split_name(path: str):
+    root, ext = os.path.splitext(path)
+    return root, ext or ".jsonl"
+
+out_root, _ = _split_name(args.output)
+
+def make_part_path(part_idx: int) -> str:
+    if args.per_file > 0:
+        return f"{out_root}_{part_idx:03d}.jsonl"
+    return f"{out_root}.jsonl"
+
+current_part = 1
+current_path = make_part_path(current_part)
+os.makedirs(os.path.dirname(current_path) or ".", exist_ok=True)
+
+out_f = open(current_path, "a", encoding="utf-8")
+written_in_part = 0
+written_total = 0
+
+def rotate_if_needed():
+    global current_part, current_path, out_f, written_in_part
+    if args.per_file <= 0:
+        return
+    if written_in_part < args.per_file:
+        return
+    out_f.flush()
+    out_f.close()
+    current_part += 1
+    current_path = make_part_path(current_part)
+    out_f = open(current_path, "a", encoding="utf-8")
+    written_in_part = 0
+
+def write_jsonl(obj: dict):
+    out_f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+def jsonl_files_to_json_arrays():
+    import glob as _glob
+    pattern = f"{out_root}*.jsonl"
+    for jsonl_path in sorted(_glob.glob(pattern)):
+        array_path = os.path.splitext(jsonl_path)[0] + ".json"
+        with open(jsonl_path, "r", encoding="utf-8") as fin, open(array_path, "w", encoding="utf-8") as fout:
+            fout.write("[\n")
+            first = True
+            for line in fin:
+                line = line.strip()
+                if not line:
+                    continue
+                if not first:
+                    fout.write(",\n")
+                fout.write(line)
+                first = False
+            fout.write("\n]\n")
+
+# =============================================================================
+# Interrupt handler
+# =============================================================================
+attempts = 0
+start = time.time()
+last_log = start
+
 def handle_interrupt(sig, frame):
     if mp.current_process().name != "MainProcess":
         return
@@ -141,77 +237,107 @@ def handle_interrupt(sig, frame):
     print(f"🔁 Attempts : {attempts:,}")
     print(f"⚡ Speed    : {attempts / elapsed:,.2f} addr/sec")
     print(f"⏱ Time     : {elapsed:.2f} sec\n")
+    try:
+        out_f.flush()
+        out_f.close()
+    except Exception:
+        pass
     sys.exit(0)
 
 signal.signal(signal.SIGINT, handle_interrupt)
 
-# === Config ===
-PREFIX = args.prefix
-SUFFIX = args.suffix
-BATCH_SIZE = args.batch
-COUNT = args.count
-OUTPUT_FILE = args.output
-STRENGTH = args.strength
-USE_POOL = args.pool
-POOL_WORKERS = args.pool_workers
-
+# =============================================================================
+# Info
+# =============================================================================
 print(f"🚀 Start searching for a custom address")
-print(f"🔹 Prefix  : {PREFIX}")
-print(f"🔹 Suffix  : {SUFFIX or '(none)'}")
-print(f"🔐 Strength: {STRENGTH} bits")
-print(f"📦 Batch   : {BATCH_SIZE:,} keys")
-print(f"🔁 Target  : {COUNT} match(es)")
+print(f"🔹 Prefix  : {args.prefix}")
+print(f"🔹 Suffix  : {args.suffix or '(none)'}")
+print(f"🔐 Strength: {args.strength} bits ({'BIP39 entropy' if args.mnemonic else 'entropy input; privkey=32 bytes'})")
+print(f"📦 Batch   : {args.batch:,} keys")
+print(f"🔁 Target  : {args.count} match(es)")
 print(f"🧠 Mnemonic: {'enabled' if args.mnemonic else 'disabled'}")
 if args.mnemonic:
     print(f"📍 Path    : {args.path}")
-if USE_POOL:
-    print(f"🧵 Pool    : enabled with {POOL_WORKERS} process(es)\n")
+if args.pool:
+    print(f"🧵 Pool    : enabled with {args.pool_workers} process(es)")
+print(f"💾 Output  : {out_root}*.jsonl (format={args.output_format}, per_file={args.per_file})")
+print("")
 
-# === Main loop ===
-attempts = 0
-start = time.time()
-last_log = start
-found = []
+# =============================================================================
+# Main loop
+# =============================================================================
+found_count = 0
 
-while len(found) < COUNT:
-    keys, mnemonics = generate_keys_cpu(BATCH_SIZE, STRENGTH)
-    attempts += len(keys)
+try:
+    while found_count < args.count:
+        keys, mnemonics = generate_keys_cpu(args.batch, args.strength)
+        attempts += len(keys)
 
-    if USE_POOL:
-        with mp.Pool(processes=POOL_WORKERS) as pool:
-            for i, result in enumerate(pool.imap_unordered(check_key, keys)):
-                if result:
-                    found.append(result)
-                    print(f"\n✅ Found!")
-                    print(f"🔗 Address     : {result['address']}")
-                    print(f"🔐 Private Key : {result['private_key']}")
+        if args.pool:
+            with mp.Pool(processes=args.pool_workers) as pool:
+                for idx, addr in pool.imap_unordered(check_key_indexed, enumerate(keys), chunksize=256):
+                    if not addr:
+                        continue
+
+                    priv = keys[idx]
+                    rec = {"address": addr, "private_key": priv.hex()}
+                    if args.mnemonic and mnemonics is not None:
+                        rec["mnemonic"] = mnemonics[idx]
+
+                    write_jsonl(rec)
+                    found_count += 1
+                    written_total += 1
+                    written_in_part += 1
+                    rotate_if_needed()
+
+                    print(f"\n✅ Found! {found_count}/{args.count}")
+                    print(f"🔗 Address     : {rec['address']}")
+                    print(f"🔐 Private Key : {rec['private_key']}")
                     if args.mnemonic:
-                        print(f"🧠 Mnemonic    : {mnemonics[i]}")
-                        result["mnemonic"] = mnemonics[i]
-                    if len(found) >= COUNT:
+                        print(f"🧠 Mnemonic    : {rec['mnemonic']}")
+                    if found_count >= args.count:
                         break
-    else:
-        for i, priv in enumerate(keys):
-            result = check_key(priv)
-            if result:
-                found.append(result)
-                print(f"\n✅ Found!")
-                print(f"🔗 Address     : {result['address']}")
-                print(f"🔐 Private Key : {result['private_key']}")
+        else:
+            for idx, priv in enumerate(keys):
+                addr = _addr_from_priv(priv)
+                if not addr:
+                    continue
+
+                rec = {"address": addr, "private_key": priv.hex()}
+                if args.mnemonic and mnemonics is not None:
+                    rec["mnemonic"] = mnemonics[idx]
+
+                write_jsonl(rec)
+                found_count += 1
+                written_total += 1
+                written_in_part += 1
+                rotate_if_needed()
+
+                print(f"\n✅ Found! {found_count}/{args.count}")
+                print(f"🔗 Address     : {rec['address']}")
+                print(f"🔐 Private Key : {rec['private_key']}")
                 if args.mnemonic:
-                    print(f"🧠 Mnemonic    : {mnemonics[i]}")
-                    result["mnemonic"] = mnemonics[i]
-                if len(found) >= COUNT:
+                    print(f"🧠 Mnemonic    : {rec['mnemonic']}")
+                if found_count >= args.count:
                     break
 
-    now = time.time()
-    if now - last_log >= 1:
-        speed = attempts / (now - start)
-        cpu_temp = get_temps()
-        print(f"\r🔄 Checked: {attempts:,} | ⚡ {speed:,.2f} addr/sec | 🧊 CPU: {cpu_temp}", end="", flush=True)
-        last_log = now
+        now = time.time()
+        if now - last_log >= 1:
+            speed = attempts / (now - start)
+            cpu_temp = get_temps()
+            print(f"\r🔄 Checked: {attempts:,} | ⚡ {speed:,.2f} addr/sec | 🧊 CPU: {cpu_temp}", end="", flush=True)
+            last_log = now
 
-with open(OUTPUT_FILE, "w") as f:
-    json.dump(found, f, indent=2)
-print(f"\n💾 Saved {len(found)} result(s) to {OUTPUT_FILE}")
+finally:
+    try:
+        out_f.flush()
+        out_f.close()
+    except Exception:
+        pass
+
+if args.output_format == "json":
+    jsonl_files_to_json_arrays()
+    print(f"\n💾 Finalized JSON arrays: {out_root}*.json")
+
+print(f"\n💾 Done. Saved {found_count} result(s) to {out_root}*.jsonl")
 
