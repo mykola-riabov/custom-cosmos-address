@@ -23,23 +23,25 @@
   - **JSONL** (default, recommended)
   - **JSON array** (optional)
 - Output file rotation by number of found results
+- Difficulty estimate and warmup benchmark at startup
+- `--no-private-key` for address-only output
+- Secure output files (`chmod 600`) and append warnings
+- Shared `cosmos_address` module + unit tests
 
 ---
 
 ## Requirements
 
 - Python **3.10+** recommended
-- Typical dependencies:
-  - `ecdsa`
-  - `bech32`
-  - `mnemonic`
-  - `bip32`
-  - `psutil`
+- Dependencies listed in `requirements.txt` (`pycryptodome` provides RIPEMD160 on OpenSSL 3 systems)
 
 Install dependencies:
 
 ```bash
 pip install -r requirements.txt
+# optional: tests
+pip install -r requirements-dev.txt
+pytest
 ```
 
 ---
@@ -80,11 +82,13 @@ python3 main.py --prefix inj1zzz --mnemonic --path "m/44'/118'/0'/0/0"
 | `--suffix` | Required address suffix | empty |
 | `--batch` | Keys generated per iteration | `10000` |
 | `--count` | Stop after N matches | `1` |
-| `--strength` | BIP39 entropy (128–256) | `128` |
+| `--strength` | Entropy bits (128–256); fast mode expands to 32-byte key | `256` |
 | `--mnemonic` | Enable BIP39 mnemonic mode | off |
 | `--path` | Derivation path (mnemonic mode) | `m/44'/118'/0'/0/0` |
 | `--pool` | Enable multiprocessing | off |
 | `--pool-workers` | Worker process count | `2` |
+| `--no-private-key` | Write address only (no secrets in output) | off |
+| `--force-output` | Append without confirmation if output exists | off |
 | `--output` | Base output filename | `addr_list.jsonl` |
 | `--output-format` | `jsonl` or `json` | `jsonl` |
 | `--per-file` | Rotate file after N results (0 = single file) | `0` |
@@ -165,16 +169,9 @@ python3 scan.py
 
 ---
 
-## Git Safety (Highly Recommended)
+## Git Safety
 
-Add the following to `.gitignore`:
-
-```gitignore
-*.jsonl
-*.json
-found_wallets/
-checked_cache.json
-```
+The repository `.gitignore` already excludes wallet output files. **Never commit** `*.jsonl`, `found_wallets/`, or `checked_cache.json`.
 
 ---
 

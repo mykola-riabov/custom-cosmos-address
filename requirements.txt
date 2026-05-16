@@ -1,7 +1,9 @@
 ecdsa
 psutil
-GPUtil
 bech32
 mnemonic
 bip32
 ijson
+pycryptodome
+requests
+tqdm

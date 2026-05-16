@@ -1,0 +1,24 @@
+[project]
+name = "custom-cosmos-address"
+version = "1.1.0"
+description = "CPU vanity address generator for Cosmos SDK chains"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ecdsa",
+    "psutil",
+    "bech32",
+    "mnemonic",
+    "bip32",
+    "ijson",
+    "pycryptodome",
+    "requests",
+    "tqdm",
+]
+
+[project.scripts]
+cosmos-vanity = "main:main"
+cosmos-scan = "scan:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

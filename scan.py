@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""
+Scan generated wallet files for on-chain balances via a Cosmos LCD endpoint.
+
+Intended for checking addresses you generated locally (see main.py).
+Do not use this tool to probe third-party or unknown wallets.
+"""
 from __future__ import annotations
 
 import gc
@@ -133,12 +139,20 @@ found_lock = threading.Lock()
 found_buffer: List[dict] = []
 found_jsonl_path: Optional[str] = None
 
+def _secure_chmod(path: str) -> None:
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 def append_found_jsonl(batch: List[dict], path: str) -> None:
     if not batch:
         return
     with open(path, "a", encoding="utf-8") as f:
         for item in batch:
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
+    _secure_chmod(path)
 
 def flush_found(force: bool = False) -> int:
     """
@@ -176,6 +190,8 @@ def jsonl_to_array_streaming(jsonl_path: str, array_path: str) -> None:
                     out.write(line)
                     first = False
         out.write("\n]\n")
+    _secure_chmod(array_path)
+
 
 # =============================================================================
 # Streaming wallet reader
@@ -360,91 +376,86 @@ def process_file(
         found_array_path,
     )
 
-# =============================================================================
-# SIGINT safe flush
-# =============================================================================
-cache_lock = threading.Lock()
-cache = load_cache(CACHE_FILE)
+def main() -> None:
+    cache_lock = threading.Lock()
+    cache = load_cache(CACHE_FILE)
 
-if CREATE_EMPTY_CACHE_ON_START and not os.path.exists(CACHE_FILE):
-    save_cache_atomic(CACHE_FILE, cache)
+    if CREATE_EMPTY_CACHE_ON_START and not os.path.exists(CACHE_FILE):
+        save_cache_atomic(CACHE_FILE, cache)
 
-# use a 1-item list as "mutable integer" for safe sharing with signal handler
-ok_since_flush_ref = [0]
+    ok_since_flush_ref = [0]
 
-def flush_all_and_exit(exit_code: int = 130):
-    flushed_found = 0
-    try:
-        flushed_found = flush_found(force=True)
-    except Exception:
-        pass
+    def flush_all_and_exit(exit_code: int = 130):
+        flushed_found = 0
+        try:
+            flushed_found = flush_found(force=True)
+        except Exception:
+            pass
 
-    try:
-        with cache_lock:
-            if ok_since_flush_ref[0] > 0:
-                save_cache_atomic(CACHE_FILE, cache)
-                ok_since_flush_ref[0] = 0
-                print(f"\n💾 Cache flushed (SIGINT tail). cache_size={len(cache):,}")
-    except Exception:
-        pass
+        try:
+            with cache_lock:
+                if ok_since_flush_ref[0] > 0:
+                    save_cache_atomic(CACHE_FILE, cache)
+                    ok_since_flush_ref[0] = 0
+                    print(f"\n💾 Cache flushed (SIGINT tail). cache_size={len(cache):,}")
+        except Exception:
+            pass
 
-    print(f"\n🛑 Interrupted. Flushed found_tail={flushed_found}")
-    raise SystemExit(exit_code)
+        print(f"\n🛑 Interrupted. Flushed found_tail={flushed_found}")
+        raise SystemExit(exit_code)
 
-def _sigint_handler(sig, frame):
-    flush_all_and_exit(130)
+    signal.signal(signal.SIGINT, lambda s, f: flush_all_and_exit(130))
 
-signal.signal(signal.SIGINT, _sigint_handler)
+    wallet_files = sorted([
+        f for f in glob.glob(INPUT_GLOB)
+        if not os.path.basename(f).startswith("found_")
+        and not os.path.abspath(f).startswith(os.path.abspath(RESULT_DIR))
+        and os.path.abspath(f) != os.path.abspath(CACHE_FILE)
+    ])
 
-# =============================================================================
-# Main
-# =============================================================================
-wallet_files = sorted([
-    f for f in glob.glob(INPUT_GLOB)
-    if not os.path.basename(f).startswith("found_")
-    and not os.path.abspath(f).startswith(os.path.abspath(RESULT_DIR))
-    and os.path.abspath(f) != os.path.abspath(CACHE_FILE)
-])
+    if not wallet_files:
+        print(f"No input files found by INPUT_GLOB='{INPUT_GLOB}'.")
+        return
 
-if not wallet_files:
-    print(f"No input files found by INPUT_GLOB='{INPUT_GLOB}'.")
-    raise SystemExit(0)
+    total_skipped = 0
+    total_ok_checked = 0
+    total_errors = 0
+    total_found = 0
 
-total_skipped = 0
-total_ok_checked = 0
-total_errors = 0
-total_found = 0
+    for file_path in wallet_files:
+        print(f"\n📂 Processing file: {file_path}")
 
-for file_path in wallet_files:
-    print(f"\n📂 Processing file: {file_path}")
+        (
+            skipped_this_file,
+            ok_checked_this_file,
+            errors_this_file,
+            found_this_file,
+            _errors_list,
+            out_jsonl,
+            out_json,
+        ) = process_file(file_path, cache, cache_lock, ok_since_flush_ref)
 
-    (
-        skipped_this_file,
-        ok_checked_this_file,
-        errors_this_file,
-        found_this_file,
-        _errors_list,
-        out_jsonl,
-        out_json,
-    ) = process_file(file_path, cache, cache_lock, ok_since_flush_ref)
+        total_skipped += skipped_this_file
+        total_ok_checked += ok_checked_this_file
+        total_errors += errors_this_file
+        total_found += found_this_file
 
-    total_skipped += skipped_this_file
-    total_ok_checked += ok_checked_this_file
-    total_errors += errors_this_file
-    total_found += found_this_file
+        print(f"⏭️ Pre-skip cached OK (this file): {skipped_this_file:,}")
+        print(f"✅ Done file. Found in this file: {found_this_file} (written batched to {out_jsonl})")
+        print(f"📄 Array file updated: {out_json}")
 
-    print(f"⏭️ Pre-skip cached OK (this file): {skipped_this_file:,}")
-    print(f"✅ Done file. Found in this file: {found_this_file} (written batched to {out_jsonl})")
-    print(f"📄 Array file updated: {out_json}")
+    print("\n🎉 Done.")
+    print(f"🧾 Cache file: {CACHE_FILE} (only OK checks cached)")
+    print(f"📥 Input glob:                  {INPUT_GLOB}")
+    print(f"⏭️ Skipped (cached OK):         {total_skipped:,}")
+    print(f"🔎 Successfully checked (OK):   {total_ok_checked:,}")
+    print(f"✅ Found ({DENOM}>0):           {total_found:,}")
+    print(f"⚠️ Errors (not cached):         {total_errors:,}")
+    print(f"💾 Cache flush threshold (OK):  {CACHE_FLUSH_EVERY_OK:,}")
+    print(f"💾 Found flush threshold:       {FOUND_FLUSH_EVERY:,}")
+    print(f"🧵 Max in-flight futures:       {MAX_IN_FLIGHT:,}")
 
-print("\n🎉 Done.")
-print(f"🧾 Cache file: {CACHE_FILE} (only OK checks cached)")
-print(f"📥 Input glob:                  {INPUT_GLOB}")
-print(f"⏭️ Skipped (cached OK):         {total_skipped:,}")
-print(f"🔎 Successfully checked (OK):   {total_ok_checked:,}")
-print(f"✅ Found (uosmo>0):             {total_found:,}")
-print(f"⚠️ Errors (not cached):         {total_errors:,}")
-print(f"💾 Cache flush threshold (OK):  {CACHE_FLUSH_EVERY_OK:,}")
-print(f"💾 Found flush threshold:       {FOUND_FLUSH_EVERY:,}")
-print(f"🧵 Max in-flight futures:       {MAX_IN_FLIGHT:,}")
+
+if __name__ == "__main__":
+    main()
 
