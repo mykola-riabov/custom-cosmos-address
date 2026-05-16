@@ -72,6 +72,19 @@ python3 main.py --prefix cosmos1gpt --mnemonic --strength 256 --count 1
 python3 main.py --prefix inj1zzz --mnemonic --path "m/44'/118'/0'/0/0"
 ```
 
+### 5. Desktop GUI
+
+Requires **tkinter** (usually bundled with Python on Linux; on Debian/Kali: `sudo apt install python3-tk`).
+
+```bash
+python3 -m gui
+```
+
+The GUI lives in the `gui/` folder and uses the same `cosmos_address` engine as the CLI.
+
+Use **View → Theme** to switch themes (Mocha, Latte, Nord, Dracula, Forest, Solarized).  
+The settings panel scrolls with the mouse wheel on smaller screens.
+
 ---
 
 ## Command-Line Arguments (`main.py`)

@@ -19,6 +19,7 @@ dependencies = [
 [project.scripts]
 cosmos-vanity = "main:main"
 cosmos-scan = "scan:main"
+cosmos-vanity-gui = "gui.app:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
