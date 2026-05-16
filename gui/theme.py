@@ -159,8 +159,24 @@ def apply_theme(root: tk.Tk, name: str) -> ThemeColors:
     )
     style.configure("TFrame", background=c["bg"])
     style.configure("Card.TFrame", background=c["surface"])
-    style.configure("TLabelframe", background=c["bg"], foreground=c["fg"])
+    style.configure(
+        "TLabelframe",
+        background=c["bg"],
+        foreground=c["fg"],
+        bordercolor=c["border"],
+        lightcolor=c["border"],
+        darkcolor=c["border"],
+    )
     style.configure("TLabelframe.Label", background=c["bg"], foreground=c["accent"])
+    style.map(
+        "TLabelframe",
+        background=[("active", c["bg"]), ("!disabled", c["bg"])],
+    )
+    style.map(
+        "TLabelframe.Label",
+        background=[("active", c["bg"])],
+        foreground=[("active", c["accent"])],
+    )
     style.configure("TLabel", background=c["bg"], foreground=c["fg"])
     style.configure("Dim.TLabel", background=c["bg"], foreground=c["fg_dim"])
     style.configure("Warn.TLabel", background=c["bg"], foreground=c["warning"])
@@ -228,5 +244,28 @@ def apply_theme(root: tk.Tk, name: str) -> ThemeColors:
         thickness=8,
     )
     style.configure("Vertical.TScrollbar", background=c["surface2"], troughcolor=c["bg"])
+    style.configure("TSeparator", background=c["border"])
 
     return c
+
+
+def refresh_embedded_ttk(root: tk.Misc) -> None:
+    """Force ttk widgets inside a Canvas window to repaint with the current theme."""
+    for child in root.winfo_children():
+        if isinstance(child, ttk.LabelFrame):
+            child.configure(style="TLabelframe")
+        elif isinstance(child, (ttk.Frame, ttk.Label)):
+            try:
+                style_name = child.cget("style")
+                if style_name:
+                    child.configure(style=style_name)
+            except tk.TclError:
+                pass
+        elif isinstance(child, (ttk.Entry, ttk.Spinbox, ttk.Combobox, ttk.Checkbutton, ttk.Button)):
+            try:
+                style_name = child.cget("style")
+                if style_name:
+                    child.configure(style=style_name)
+            except tk.TclError:
+                pass
+        refresh_embedded_ttk(child)

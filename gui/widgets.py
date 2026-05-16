@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
+
+
 class ScrollableFrame(ttk.Frame):
     """Vertically scrollable container; place child widgets on `.inner`."""
 
-    def __init__(self, parent: tk.Misc, **kwargs) -> None:
+    def __init__(self, parent: tk.Misc, *, bg: str = "#1e1e2e", **kwargs) -> None:
         super().__init__(parent, **kwargs)
-        self._canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0)
+        self._bg = bg
+        self._canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0, bg=bg)
         self._scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self._canvas.yview)
-        self.inner = ttk.Frame(self._canvas)
+        # tk.Frame (not ttk): ttk children inside Canvas on Linux ignore theme updates.
+        self.inner = tk.Frame(self._canvas, bg=bg, bd=0, highlightthickness=0)
 
         self._window_id = self._canvas.create_window((0, 0), window=self.inner, anchor=tk.NW)
         self._canvas.configure(yscrollcommand=self._scrollbar.set)
@@ -55,7 +59,9 @@ class ScrollableFrame(ttk.Frame):
             self._canvas.yview_scroll(3, "units")
 
     def set_colors(self, bg: str) -> None:
+        self._bg = bg
         self._canvas.configure(bg=bg)
+        self.inner.configure(bg=bg)
 
     def scroll_to_top(self) -> None:
         self._canvas.yview_moveto(0)

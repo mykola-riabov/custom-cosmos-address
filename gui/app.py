@@ -15,7 +15,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from cosmos_address import ALLOWED_STRENGTHS, VERSION, estimate_difficulty, validate_pattern
-from gui.theme import DEFAULT_THEME, apply_theme, theme_names
+from gui.theme import DEFAULT_THEME, apply_theme, refresh_embedded_ttk, theme_names
 from gui.widgets import ScrollableFrame
 from gui.worker import SearchConfig, start_search_process
 
@@ -37,6 +37,7 @@ class VanityGuiApp(tk.Tk):
 
         self._build_menu()
         self._build_ui()
+        self._apply_theme(self._theme_var.get())
         self._update_difficulty_hint()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -77,6 +78,8 @@ class VanityGuiApp(tk.Tk):
         self._colors = apply_theme(self, name)
         c = self._colors
         self._scroll_frame.set_colors(c["bg"])
+        refresh_embedded_ttk(self._scroll_frame.inner)
+        self._style_menus(c)
         self.log.configure(
             bg=c["log_bg"],
             fg=c["log_fg"],
@@ -84,6 +87,35 @@ class VanityGuiApp(tk.Tk):
             selectbackground=c["accent"],
             selectforeground=c["accent_btn_fg"],
         )
+        self.update_idletasks()
+
+    def _style_menus(self, c: dict) -> None:
+        """Best-effort menu colors (tk.Menu is separate from ttk themes)."""
+        try:
+            menu_cfg = {
+                "bg": c["surface"],
+                "fg": c["fg"],
+                "activebackground": c["accent"],
+                "activeforeground": c["accent_btn_fg"],
+                "relief": tk.FLAT,
+                "bd": 0,
+            }
+
+            def walk(menu: tk.Menu) -> None:
+                menu.configure(**menu_cfg)
+                end = menu.index(tk.END)
+                if end is None:
+                    return
+                for i in range(end + 1):
+                    try:
+                        if menu.type(i) == "cascade":
+                            walk(menu.nametowidget(menu.entrycget(i, "menu")))
+                    except tk.TclError:
+                        pass
+
+            walk(self.nametowidget(self["menu"]))
+        except (tk.TclError, KeyError):
+            pass
 
     def _build_ui(self) -> None:
         pad = {"padx": 8, "pady": 4}
@@ -142,9 +174,8 @@ class VanityGuiApp(tk.Tk):
         self.log.grid(row=0, column=0, sticky=tk.NSEW)
 
         # --- Top: scrollable settings + progress ---
-        self._scroll_frame = ScrollableFrame(outer)
+        self._scroll_frame = ScrollableFrame(outer, bg=c["bg"])
         self._scroll_frame.grid(row=0, column=0, sticky=tk.NSEW)
-        self._scroll_frame.set_colors(c["bg"])
         content = self._scroll_frame.inner
 
         settings = ttk.LabelFrame(content, text="Search settings", padding=10)
