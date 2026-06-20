@@ -17,12 +17,14 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QVBoxLayout,
     QWidget,
+    QFileDialog,
 )
 
 from cosmos_address import VERSION
 from gui.qt.generator_page import GeneratorPage
 from gui.qt.scanner_page import ScannerPage
 from gui.qt.theme import DEFAULT_THEME, build_stylesheet, get_colors, theme_names
+from workspace import ensure_workspace, load_saved_workspace, save_workspace, shorten_path
 
 
 class NavButton(QPushButton):
@@ -46,6 +48,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._apply_theme(self._theme_name)
+        self._apply_workspace(load_saved_workspace())
         self._switch_page(0)
 
     def _build_ui(self) -> None:
@@ -111,7 +114,31 @@ class MainWindow(QMainWindow):
         sep1.setFrameShape(QFrame.Shape.HLine)
         layout.addWidget(sep1)
 
-        layout.addWidget(QLabel(""))  # spacing
+        caption_ws = QLabel("WORKSPACE")
+        caption_ws.setObjectName("sidebarCaption")
+        layout.addWidget(caption_ws)
+        self._workspace_label = QLabel("")
+        self._workspace_label.setObjectName("workspacePath")
+        self._workspace_label.setWordWrap(True)
+        layout.addWidget(self._workspace_label)
+        ws_btns = QHBoxLayout()
+        ws_btns.setSpacing(6)
+        choose_ws = QPushButton("Choose…")
+        choose_ws.setObjectName("ghostBtn")
+        choose_ws.clicked.connect(self._choose_workspace)
+        open_ws = QPushButton("Open")
+        open_ws.setObjectName("ghostBtn")
+        open_ws.clicked.connect(self._open_workspace)
+        ws_btns.addWidget(choose_ws)
+        ws_btns.addWidget(open_ws)
+        layout.addLayout(ws_btns)
+
+        sep_ws = QFrame()
+        sep_ws.setObjectName("sidebarSep")
+        sep_ws.setFrameShape(QFrame.Shape.HLine)
+        layout.addWidget(sep_ws)
+
+        layout.addWidget(QLabel(""))
         caption_nav = QLabel("NAVIGATION")
         caption_nav.setObjectName("sidebarCaption")
         layout.addWidget(caption_nav)
@@ -173,6 +200,35 @@ class MainWindow(QMainWindow):
     def get_generator_output_path(self) -> str:
         return self._generator_page.get_output_path()
 
+    def get_workspace_root(self) -> str:
+        return str(self._workspace_paths.root)
+
+    def _apply_workspace(self, root) -> None:
+        self._workspace_paths = ensure_workspace(root)
+        save_workspace(self._workspace_paths.root)
+        full = str(self._workspace_paths.root)
+        self._workspace_label.setText(shorten_path(self._workspace_paths.root, max_len=34))
+        self._workspace_label.setToolTip(full)
+        self._generator_page.set_workspace(self._workspace_paths)
+        self._scanner_page.set_workspace(self._workspace_paths)
+
+    def _choose_workspace(self) -> None:
+        start = str(self._workspace_paths.root) if hasattr(self, "_workspace_paths") else str(load_saved_workspace())
+        path = QFileDialog.getExistingDirectory(self, "Choose workspace folder", start)
+        if path:
+            self._apply_workspace(path)
+
+    def _open_workspace(self) -> None:
+        import subprocess
+
+        if not hasattr(self, "_workspace_paths"):
+            return
+        folder = self._workspace_paths.root
+        try:
+            subprocess.Popen(["xdg-open", str(folder)])  # noqa: S603, S607
+        except OSError:
+            pass
+
     def _apply_theme(self, name: str) -> None:
         self._theme_name = name
         self.setStyleSheet(build_stylesheet(name) + self._nav_stylesheet())
@@ -181,6 +237,8 @@ class MainWindow(QMainWindow):
             f"background-color: {c['card']}; color: {c['accent']}; "
             f"border: 1px solid {c['border']}; border-radius: 8px; padding: 8px 14px;"
         )
+        if hasattr(self, "_workspace_label"):
+            self._workspace_label.setStyleSheet(f"color: {c['fg_dim']}; font-size: 9pt;")
         self._generator_page.set_theme_name(name)
         self._scanner_page.set_theme_name(name)
         if self._stack.currentIndex() == 0:

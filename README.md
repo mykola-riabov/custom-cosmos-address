@@ -74,19 +74,27 @@ python3 main.py --prefix inj1zzz --mnemonic --path "m/44'/118'/0'/0/0"
 
 ### 5. Desktop GUI
 
-Requires **tkinter** (usually bundled with Python on Linux; on Debian/Kali: `sudo apt install python3-tk`).
-
 ```bash
 python3 -m gui
 # or after pip install -e .:
 cosmos-vanity-gui
 ```
 
-The GUI lives in the `gui/` folder and uses the same `cosmos_address` engine as the CLI.  
-The interface follows a **Stacer-inspired** layout: sidebar navigation, card panels, and a modern dark theme by default.
+The GUI uses the same `cosmos_address` engine as the CLI (PySide6 / Qt 6).
 
-Use the **Theme** selector in the sidebar to switch palettes (21 built-in themes).  
-The settings panel scrolls with the mouse wheel on smaller screens.
+**Workspace folder** — choose once in the sidebar (**WORKSPACE → Choose…**). Everything stays under one directory (saved between sessions):
+
+```
+~/custom-cosmos-address/     ← default
+├── generated/               ← generator output (*.jsonl)
+│   └── addr_list.jsonl
+├── found_wallets/           ← scanner: wallets with balance
+└── checked_cache.json       ← scanner resume cache
+```
+
+Generator and scanner paths stay in sync — no separate file pickers.
+
+Use the **Theme** selector in the sidebar to switch palettes (21 built-in themes).
 
 ### 6. Install from `.deb` (Debian / Ubuntu / Kali)
 
@@ -111,7 +119,7 @@ This installs:
 | `cosmos-vanity` | CLI generator |
 | `cosmos-scan` | Balance scanner |
 
-Runtime dependencies: `python3 (>= 3.10)` and `python3-tk`. Python libraries are bundled inside the package.
+Runtime dependencies: `python3 (>= 3.10)` and `libxcb-cursor0`. Python libraries are bundled inside the package.
 
 Launch the GUI from the terminal or find **Custom Cosmos Address** in your desktop application menu.
 

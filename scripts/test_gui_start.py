@@ -3,6 +3,7 @@
 import multiprocessing as mp
 import os
 import sys
+import tempfile
 import time
 
 mp.freeze_support()
@@ -17,28 +18,30 @@ from gui.qt.main_window import MainWindow
 def main() -> int:
     qt = QApplication(sys.argv)
     app = MainWindow()
-    app._prefix.setText("osmo1a")
-    app._batch.setValue(500)
-    app._count.setValue(1)
-    app._output.setText("/tmp/gui-autotest.jsonl")
+    gen = app._generator_page
+    gen._prefix.setText("osmo1a")
+    gen._batch.setValue(500)
+    gen._count.setValue(1)
+    ws = tempfile.mkdtemp(prefix="cosmos-gui-test-")
+    app._apply_workspace(ws)
 
-    app._start()
-    print("start invoked, proc=", app._proc, flush=True)
+    gen._start()
+    print("start invoked, proc=", gen._proc, flush=True)
 
     deadline = time.time() + 30
     while time.time() < deadline:
         qt.processEvents()
-        app._poll_queue()
-        if app._proc and not app._proc.is_alive():
-            app._poll_queue()
+        gen._poll_queue()
+        if gen._proc and not gen._proc.is_alive():
+            gen._poll_queue()
             break
-        if app._progress_label.text() in ("Done", "Error", "Stopped", "Finished"):
+        if gen._progress_label.text() in ("Done", "Error", "Stopped", "Finished"):
             break
         time.sleep(0.05)
 
     print("--- LOG ---")
-    print(app._log.toPlainText())
-    print("progress:", app._progress_label.text())
+    print(gen._log.toPlainText())
+    print("progress:", gen._progress_label.text())
     return 0
 
 

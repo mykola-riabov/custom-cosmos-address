@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import os
-
 from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -25,9 +22,9 @@ from PySide6.QtWidgets import (
 
 from gui.qt.found_wallets_table import FoundWalletsPanel
 from gui.qt.scan_runner import ScanThread
-from gui.qt.theme import get_colors
 from gui.qt.widgets import Card, form_row
 from scanner import ScanConfig, resolve_input_files
+from workspace import WorkspaceLayout, default_workspace, ensure_workspace
 
 
 class ScannerPage(QWidget):
@@ -36,10 +33,26 @@ class ScannerPage(QWidget):
         self._theme_name = theme_name
         self._scan_thread: ScanThread | None = None
         self._last_progress_log = 0
+        self._workspace = ensure_workspace(default_workspace())
         self._build_ui()
+        self._refresh_workspace_labels()
 
     def set_theme_name(self, name: str) -> None:
         self._theme_name = name
+
+    def set_workspace(self, layout: WorkspaceLayout) -> None:
+        self._workspace = layout
+        self._refresh_workspace_labels()
+
+    def _refresh_workspace_labels(self) -> None:
+        if not hasattr(self, "_scan_from"):
+            return
+        self._scan_from.setText(f"{self._workspace.generated_dir}/")
+        self._scan_from.setToolTip(str(self._workspace.generated_dir))
+        self._results_dir.setText(f"{self._workspace.found_dir}/")
+        self._results_dir.setToolTip(str(self._workspace.found_dir))
+        self._cache_path.setText(str(self._workspace.cache_file))
+        self._cache_path.setToolTip(str(self._workspace.cache_file))
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
@@ -59,7 +72,7 @@ class ScannerPage(QWidget):
         outer.addWidget(scroll, stretch=1)
 
         prog = Card("Progress")
-        self._progress_label = QLabel("Ready — select wallet file(s) and press Start scan")
+        self._progress_label = QLabel("Ready — scans all *.jsonl in workspace generated/")
         prog.body_layout.addWidget(self._progress_label)
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 0)
@@ -67,26 +80,26 @@ class ScannerPage(QWidget):
         prog.body_layout.addWidget(self._progress_bar)
         grid.addWidget(prog, 0, 0, 1, 2)
 
-        input_card = Card("Input")
-        self._input_path = QLineEdit(str(Path.home() / "addr_list.jsonl"))
-        browse_in = QPushButton("File")
-        browse_in.clicked.connect(self._browse_input)
-        browse_dir = QPushButton("Folder")
-        browse_dir.clicked.connect(self._browse_input_dir)
-        in_row = QHBoxLayout()
-        in_row.addWidget(self._input_path, stretch=1)
-        in_row.addWidget(browse_in)
-        in_row.addWidget(browse_dir)
-        in_wrap = QWidget()
-        in_wrap.setLayout(in_row)
-        input_card.body_layout.addLayout(form_row("Wallet source", in_wrap))
+        paths = Card("Workspace paths")
+        self._scan_from = QLabel()
+        self._scan_from.setObjectName("cardDim")
+        self._scan_from.setWordWrap(True)
+        self._results_dir = QLabel()
+        self._results_dir.setObjectName("cardDim")
+        self._results_dir.setWordWrap(True)
+        self._cache_path = QLabel()
+        self._cache_path.setObjectName("cardDim")
+        self._cache_path.setWordWrap(True)
+        paths.body_layout.addLayout(form_row("Scan from", self._scan_from))
+        paths.body_layout.addLayout(form_row("Found wallets", self._results_dir))
+        paths.body_layout.addLayout(form_row("Cache", self._cache_path))
         hint = QLabel(
-            "Single file, folder with *.jsonl, or glob (e.g. /data/wallets/*.jsonl). "
-            "Cache file skips addresses already checked — safe to stop and resume."
+            "Scanner reads every wallet file in generated/. "
+            "Cache skips already-checked addresses — safe to stop and resume."
         )
         hint.setObjectName("cardHint")
-        input_card.body_layout.addWidget(hint)
-        grid.addWidget(input_card, 1, 0)
+        paths.body_layout.addWidget(hint)
+        grid.addWidget(paths, 1, 0)
 
         endpoint = Card("Endpoint")
         self._lcd = QLineEdit("https://lcd-osmosis.keplr.app")
@@ -99,25 +112,11 @@ class ScannerPage(QWidget):
         endpoint.body_layout.addLayout(form_row("Workers", self._workers))
         grid.addWidget(endpoint, 1, 1)
 
-        output = Card("Output")
-        self._result_dir = QLineEdit("found_wallets")
-        self._cache_file = QLineEdit("checked_cache.json")
-        browse_res = QPushButton("Browse")
-        browse_res.clicked.connect(self._browse_result_dir)
-        res_row = QHBoxLayout()
-        res_row.addWidget(self._result_dir, stretch=1)
-        res_row.addWidget(browse_res)
-        res_wrap = QWidget()
-        res_wrap.setLayout(res_row)
-        output.body_layout.addLayout(form_row("Results dir", res_wrap))
-        output.body_layout.addLayout(form_row("Cache file", self._cache_file))
-        grid.addWidget(output, 2, 0, 1, 2)
-
         found_card = Card("Found wallets")
         self._found_panel = FoundWalletsPanel()
         self._found_panel._open_dir_btn.clicked.connect(self._open_results_dir)
         found_card.body_layout.addWidget(self._found_panel)
-        grid.addWidget(found_card, 3, 0, 1, 2)
+        grid.addWidget(found_card, 2, 0, 1, 2)
 
         log_card = Card("Scan log")
         self._log = QTextEdit()
@@ -125,9 +124,9 @@ class ScannerPage(QWidget):
         self._log.setReadOnly(True)
         self._log.setMinimumHeight(140)
         log_card.body_layout.addWidget(self._log)
-        grid.addWidget(log_card, 4, 0, 1, 2)
-        grid.setRowStretch(3, 2)
-        grid.setRowStretch(4, 1)
+        grid.addWidget(log_card, 3, 0, 1, 2)
+        grid.setRowStretch(2, 2)
+        grid.setRowStretch(3, 1)
 
         actions = QHBoxLayout()
         self._start_btn = QPushButton("START SCAN")
@@ -137,53 +136,15 @@ class ScannerPage(QWidget):
         self._stop_btn.setObjectName("dangerBtn")
         self._stop_btn.setEnabled(False)
         self._stop_btn.clicked.connect(self._stop)
-        self._use_generator_output = QPushButton("Use generator output")
-        self._use_generator_output.setObjectName("ghostBtn")
-        self._use_generator_output.clicked.connect(self._fill_from_generator)
         actions.addWidget(self._start_btn)
         actions.addWidget(self._stop_btn)
-        actions.addWidget(self._use_generator_output)
         actions.addStretch()
         outer.addLayout(actions)
 
-        self._append_log("Scan locally generated wallets only — checks balances via Cosmos LCD.")
-
-    def set_generator_output_path(self, path: str) -> None:
-        if path.strip():
-            self._input_path.setText(path.strip())
-
-    def _fill_from_generator(self) -> None:
-        parent = self.window()
-        if hasattr(parent, "get_generator_output_path"):
-            path = parent.get_generator_output_path()  # type: ignore[attr-defined]
-            if path:
-                self._input_path.setText(path)
-                self._append_log(f"Input set from generator: {path}")
-                return
-        self._append_log("Set output path on the Generator page first.")
-
-    def _browse_input(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Wallet file",
-            str(Path.home()),
-            "Wallet files (*.jsonl *.json);;All files (*.*)",
-        )
-        if path:
-            self._input_path.setText(path)
-
-    def _browse_input_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Wallet folder", self._input_path.text() or str(Path.home()))
-        if path:
-            self._input_path.setText(path)
-
-    def _browse_result_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Results directory", self._result_dir.text() or ".")
-        if path:
-            self._result_dir.setText(path)
+        self._append_log("Scans wallets from the workspace generated/ folder via Cosmos LCD.")
 
     def _open_results_dir(self) -> None:
-        self._found_panel.open_results_dir(self._result_dir.text().strip() or "found_wallets")
+        self._found_panel.open_results_dir(str(self._workspace.found_dir))
 
     def _append_log(self, line: str) -> None:
         self._log.append(line)
@@ -194,34 +155,26 @@ class ScannerPage(QWidget):
         self._progress_bar.setVisible(running)
 
     def _config_from_ui(self) -> ScanConfig:
-        raw = self._input_path.text().strip()
-        base = ScanConfig(
+        return ScanConfig(
+            input_files=[str(self._workspace.generated_dir)],
             lcd_endpoint=self._lcd.text().strip(),
             denom=self._denom.text().strip(),
             num_workers=int(self._workers.value()),
-            result_dir=self._result_dir.text().strip() or "found_wallets",
-            cache_file=self._cache_file.text().strip() or "checked_cache.json",
+            result_dir=str(self._workspace.found_dir),
+            cache_file=str(self._workspace.cache_file),
         )
-        if not raw:
-            return base
-        if "*" in raw or "?" in raw:
-            base.input_glob = raw
-            return base
-        if os.path.isdir(raw):
-            base.input_files = [raw]
-            return base
-        base.input_files = [raw]
-        return base
 
     def _start(self) -> None:
         if self._scan_thread and self._scan_thread.isRunning():
             return
         try:
             config = self._config_from_ui()
-            if not self._input_path.text().strip():
-                raise ValueError("Wallet file, folder, or glob is required.")
-            if not resolve_input_files(config):
-                raise ValueError("No wallet files found at the given path.")
+            files = resolve_input_files(config)
+            if not files:
+                raise ValueError(
+                    f"No wallet files in {self._workspace.generated_dir}/. "
+                    "Generate addresses first on the Generator page."
+                )
             if not config.lcd_endpoint:
                 raise ValueError("LCD endpoint is required.")
             if not config.denom:
@@ -231,6 +184,7 @@ class ScannerPage(QWidget):
             return
 
         self._append_log("——— Starting balance scan ———")
+        self._append_log(f"Workspace: {self._workspace.root}")
         self._found_panel.clear()
         self._last_progress_log = 0
         self._set_running(True)

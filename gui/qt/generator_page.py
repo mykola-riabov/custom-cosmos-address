@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import queue
-from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -29,6 +27,7 @@ from cosmos_address import ALLOWED_STRENGTHS, estimate_difficulty, validate_patt
 from gui.qt.theme import get_colors
 from gui.qt.widgets import Card, form_row
 from gui.worker import SearchConfig, start_search_process
+from workspace import WorkspaceLayout, default_workspace, ensure_workspace
 
 _MAX_MSGS_PER_TICK = 80
 _MAX_LOG_LINES = 400
@@ -44,14 +43,28 @@ class GeneratorPage(QWidget):
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_queue)
         self._saw_worker_message = False
+        self._workspace = ensure_workspace(default_workspace())
         self._build_ui()
+        self._refresh_workspace_labels()
 
     def set_theme_name(self, name: str) -> None:
         self._theme_name = name
         self._update_difficulty_hint()
 
+    def set_workspace(self, layout: WorkspaceLayout) -> None:
+        self._workspace = layout
+        self._refresh_workspace_labels()
+
     def get_output_path(self) -> str:
-        return self._output.text().strip()
+        return str(self._workspace.generated_file)
+
+    def _refresh_workspace_labels(self) -> None:
+        if not hasattr(self, "_output_generated"):
+            return
+        self._output_generated.setText(str(self._workspace.generated_file))
+        self._output_generated.setToolTip(str(self._workspace.generated_file))
+        self._output_dir.setText(str(self._workspace.generated_dir))
+        self._output_dir.setToolTip(str(self._workspace.generated_dir))
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
@@ -118,15 +131,20 @@ class GeneratorPage(QWidget):
         grid.addWidget(wallet, 2, 0)
 
         output = Card("Output")
-        self._output = QLineEdit(str(Path.home() / "addr_list.jsonl"))
-        browse = QPushButton("Browse")
-        browse.clicked.connect(self._browse_output)
-        path_row = QHBoxLayout()
-        path_row.addWidget(self._output, stretch=1)
-        path_row.addWidget(browse)
-        path_wrap = QWidget()
-        path_wrap.setLayout(path_row)
-        output.body_layout.addLayout(form_row("File path", path_wrap))
+        self._output_dir = QLabel()
+        self._output_dir.setObjectName("cardDim")
+        self._output_dir.setWordWrap(True)
+        self._output_generated = QLabel()
+        self._output_generated.setObjectName("cardDim")
+        self._output_generated.setWordWrap(True)
+        output.body_layout.addLayout(form_row("Folder", self._output_dir))
+        output.body_layout.addLayout(form_row("File", self._output_generated))
+        ws_hint = QLabel(
+            "Paths come from the workspace folder in the sidebar. "
+            "Change workspace once — generator and scanner stay in sync."
+        )
+        ws_hint.setObjectName("cardHint")
+        output.body_layout.addWidget(ws_hint)
         self._per_file = QSpinBox()
         self._per_file.setRange(0, 2_147_483_647)
         self._per_file.setSingleStep(50_000)
@@ -136,7 +154,7 @@ class GeneratorPage(QWidget):
         self._no_secrets = QCheckBox("Address only (no private keys in file)")
         output.body_layout.addWidget(self._no_secrets)
         hint = QLabel(
-            "Max per file: split output into parts, e.g. 500000 → name_001.jsonl, name_002.jsonl… "
+            "Max per file: split output into parts, e.g. 500000 → addr_list_001.jsonl… "
             "0 = one file. Files are appended on restart."
         )
         hint.setObjectName("cardHint")
@@ -171,16 +189,6 @@ class GeneratorPage(QWidget):
     def update_difficulty_badge(self, badge: QLabel) -> None:
         self._badge = badge
         self._update_difficulty_hint()
-
-    def _browse_output(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Output JSONL",
-            self._output.text() or "addr_list.jsonl",
-            "JSON Lines (*.jsonl);;All files (*.*)",
-        )
-        if path:
-            self._output.setText(path)
 
     def _update_difficulty_hint(self) -> None:
         if not hasattr(self, "_badge"):
@@ -260,7 +268,7 @@ class GeneratorPage(QWidget):
             strength=int(self._strength.currentText()),
             mnemonic=self._mnemonic.isChecked(),
             path=self._path.text().strip(),
-            output=self._output.text().strip(),
+            output=self.get_output_path(),
             no_private_key=self._no_secrets.isChecked(),
             pool=self._pool.isChecked(),
             pool_workers=int(self._workers.value()),
@@ -274,7 +282,7 @@ class GeneratorPage(QWidget):
             config = self._config_from_ui()
             validate_pattern(config.prefix, config.suffix)
             if not config.output:
-                raise ValueError("Output file path is required.")
+                raise ValueError("Workspace output path is not set.")
         except ValueError as e:
             QMessageBox.critical(self, "Invalid input", str(e))
             return
