@@ -28,6 +28,8 @@ from cosmos_address import (  # noqa: E402
 
 OUTPUT_MODE = 0o600
 _PROGRESS_EVERY = 2_000
+# For large target counts, avoid one queue message per found address (freezes the GUI).
+_DETAIL_FOUND_LIMIT = 100
 
 
 def _worker_mp_context() -> mp.context.BaseContext:
@@ -133,6 +135,33 @@ def run_search(config: SearchConfig, msg_queue: mp.Queue, stop_event: mp.Event) 
     current_part = 1
     written_in_part = 0
     current_path = _part_path(out_root, current_part, config.per_file)
+    last_found_ui_at = 0
+    found_ui_step = max(1_000, config.count // 500) if config.count > _DETAIL_FOUND_LIMIT else 1
+    flush_every = max(1, min(500, config.count // 1000))
+
+    def maybe_emit_found_progress(*, force: bool = False) -> None:
+        nonlocal last_found_ui_at
+        if config.count <= _DETAIL_FOUND_LIMIT and not force:
+            return
+        if (
+            not force
+            and found_count != 1
+            and found_count < config.count
+            and found_count - last_found_ui_at < found_ui_step
+        ):
+            return
+        last_found_ui_at = found_count
+        elapsed = time.time() - start
+        speed = attempts / elapsed if elapsed > 0 else 0.0
+        msg_queue.put(
+            {
+                "type": "progress",
+                "attempts": attempts,
+                "speed": speed,
+                "found": found_count,
+                "target": config.count,
+            }
+        )
 
     def rotate_if_needed(out_f) -> Any:
         nonlocal current_part, current_path, written_in_part
@@ -152,10 +181,14 @@ def run_search(config: SearchConfig, msg_queue: mp.Queue, stop_event: mp.Event) 
     def write_match(out_f, rec: dict[str, Any]) -> Any:
         nonlocal found_count, written_in_part
         out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        out_f.flush()
         found_count += 1
         written_in_part += 1
-        msg_queue.put({"type": "found", "record": rec, "found": found_count})
+        if found_count % flush_every == 0:
+            out_f.flush()
+        if config.count <= _DETAIL_FOUND_LIMIT:
+            msg_queue.put({"type": "found", "record": rec, "found": found_count})
+        else:
+            maybe_emit_found_progress(force=found_count >= config.count)
         return rotate_if_needed(out_f)
 
     def emit_progress(*, force: bool = False, attempt_count: int | None = None) -> None:
@@ -257,6 +290,7 @@ def run_search(config: SearchConfig, msg_queue: mp.Queue, stop_event: mp.Event) 
             out_f.flush()
             out_f.close()
 
+        maybe_emit_found_progress(force=True)
         output_desc = f"{out_root}_*.jsonl" if config.per_file > 0 else current_path
         if stop_event.is_set():
             msg_queue.put(

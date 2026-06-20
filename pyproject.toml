@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "custom-cosmos-address"
-version = "1.3.3"
+version = "1.3.4"
 description = "CPU vanity address generator for Cosmos SDK chains"
 readme = "README.md"
 requires-python = ">=3.10"

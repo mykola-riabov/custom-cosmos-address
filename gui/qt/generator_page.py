@@ -30,6 +30,9 @@ from gui.qt.theme import get_colors
 from gui.qt.widgets import Card, form_row
 from gui.worker import SearchConfig, start_search_process
 
+_MAX_MSGS_PER_TICK = 80
+_MAX_LOG_LINES = 400
+
 
 class GeneratorPage(QWidget):
     def __init__(self, *, theme_name: str, parent: QWidget | None = None) -> None:
@@ -163,6 +166,7 @@ class GeneratorPage(QWidget):
         outer.addLayout(actions)
 
         self._append_log("Configure pattern and press Start to generate vanity addresses.")
+        self._bulk_mode = False
 
     def update_difficulty_badge(self, badge: QLabel) -> None:
         self._badge = badge
@@ -205,6 +209,42 @@ class GeneratorPage(QWidget):
 
     def _append_log(self, line: str) -> None:
         self._log.append(line)
+        excess = self._log.document().blockCount() - _MAX_LOG_LINES
+        if excess > 50:
+            cursor = self._log.textCursor()
+            cursor.movePosition(cursor.MoveOperation.Start)
+            for _ in range(min(excess, 100)):
+                cursor.select(cursor.SelectionType.BlockUnderCursor)
+                cursor.removeSelectedText()
+                cursor.deleteChar()
+            self._log.setTextCursor(cursor)
+
+    def _apply_progress(self, msg: dict) -> None:
+        self._progress_label.setText(
+            f"Checked: {msg['attempts']:,}  ·  {msg['speed']:,.0f} addr/s  ·  "
+            f"found {msg['found']:,}/{msg['target']:,}"
+        )
+
+    def _consume_queue(self, *, limit: int | None = None) -> dict | None:
+        """Process queue messages; return terminal message if seen."""
+        terminal: dict | None = None
+        processed = 0
+        while limit is None or processed < limit:
+            try:
+                msg = self._msg_queue.get_nowait()  # type: ignore[union-attr]
+            except queue.Empty:
+                break
+            self._saw_worker_message = True
+            processed += 1
+            kind = msg.get("type")
+            if kind in ("done", "stopped", "error"):
+                terminal = msg
+                continue
+            if kind == "progress":
+                self._apply_progress(msg)
+                continue
+            self._handle_message(msg)
+        return terminal
 
     def _set_running(self, running: bool) -> None:
         self._start_btn.setEnabled(not running)
@@ -240,7 +280,13 @@ class GeneratorPage(QWidget):
             return
 
         self._saw_worker_message = False
+        self._bulk_mode = int(self._count.value()) > 100
         self._append_log("——— Starting search ———")
+        if self._bulk_mode:
+            self._append_log(
+                f"Bulk mode ({self._count.value():,} targets): progress in status bar, "
+                "addresses saved to file — log stays minimal."
+            )
         self._set_running(True)
         self._progress_label.setText("Starting worker…")
 
@@ -282,18 +328,16 @@ class GeneratorPage(QWidget):
     def _poll_queue(self) -> None:
         if not self._msg_queue:
             return
-        try:
-            while True:
-                msg = self._msg_queue.get_nowait()
-                self._saw_worker_message = True
-                self._handle_message(msg)
-        except queue.Empty:
-            pass
+        terminal = self._consume_queue(limit=_MAX_MSGS_PER_TICK)
+        if terminal:
+            self._handle_message(terminal)
 
         if self._proc and not self._proc.is_alive():
             self._proc.join(timeout=0.2)
-            self._drain_queue_once()
-            if not self._saw_worker_message:
+            terminal = self._consume_queue(limit=None)
+            if terminal:
+                self._handle_message(terminal)
+            elif not self._saw_worker_message:
                 self._handle_worker_failure(self._proc.exitcode)
             self._cleanup_process()
             self._poll_timer.stop()
@@ -302,15 +346,9 @@ class GeneratorPage(QWidget):
                 self._progress_label.setText("Finished")
 
     def _drain_queue_once(self) -> None:
-        if not self._msg_queue:
-            return
-        try:
-            while True:
-                msg = self._msg_queue.get_nowait()
-                self._saw_worker_message = True
-                self._handle_message(msg)
-        except queue.Empty:
-            pass
+        terminal = self._consume_queue(limit=None)
+        if terminal:
+            self._handle_message(terminal)
 
     def _handle_worker_failure(self, exit_code: int | None) -> None:
         message = (
@@ -336,12 +374,17 @@ class GeneratorPage(QWidget):
         elif kind == "rotated":
             self._append_log(f"Rotated to part {msg.get('part')}: {msg.get('path')}")
         elif kind == "progress":
-            self._progress_label.setText(
-                f"Checked: {msg['attempts']:,}  ·  {msg['speed']:,.0f} addr/s  ·  "
-                f"found {msg['found']}/{msg['target']}"
-            )
+            self._apply_progress(msg)
         elif kind == "found":
             rec = msg["record"]
+            self._apply_progress(
+                {
+                    "attempts": 0,
+                    "speed": 0,
+                    "found": msg["found"],
+                    "target": int(self._count.value()),
+                }
+            )
             self._append_log(f"✅ Found ({msg['found']}): {rec['address']}")
             if "private_key" in rec:
                 self._append_log(f"   private_key: {rec['private_key']}")
