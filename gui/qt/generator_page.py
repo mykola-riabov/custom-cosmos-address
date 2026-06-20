@@ -124,9 +124,18 @@ class GeneratorPage(QWidget):
         path_wrap = QWidget()
         path_wrap.setLayout(path_row)
         output.body_layout.addLayout(form_row("File path", path_wrap))
+        self._per_file = QSpinBox()
+        self._per_file.setRange(0, 2_147_483_647)
+        self._per_file.setSingleStep(50_000)
+        self._per_file.setSpecialValueText("No limit (single file)")
+        self._per_file.setValue(0)
+        output.body_layout.addLayout(form_row("Max per file", self._per_file))
         self._no_secrets = QCheckBox("Address only (no private keys in file)")
         output.body_layout.addWidget(self._no_secrets)
-        hint = QLabel("Output files may contain secrets — keep them private")
+        hint = QLabel(
+            "Max per file: split output into parts, e.g. 500000 → name_001.jsonl, name_002.jsonl… "
+            "0 = one file. Files are appended on restart."
+        )
         hint.setObjectName("cardHint")
         output.body_layout.addWidget(hint)
         grid.addWidget(output, 2, 1)
@@ -215,6 +224,7 @@ class GeneratorPage(QWidget):
             no_private_key=self._no_secrets.isChecked(),
             pool=self._pool.isChecked(),
             pool_workers=int(self._workers.value()),
+            per_file=int(self._per_file.value()),
         )
 
     def _start(self) -> None:
@@ -316,6 +326,15 @@ class GeneratorPage(QWidget):
         if kind == "info":
             d = msg.get("difficulty", {})
             self._append_log(f"HRP: {msg.get('hrp')} | constrained chars: {d.get('constrained_chars', 0)}")
+        elif kind == "output":
+            if msg.get("per_file", 0) > 0:
+                self._append_log(
+                    f"Output split: up to {msg['per_file']:,} per file → {msg.get('pattern')}"
+                )
+            else:
+                self._append_log(f"Output: {msg.get('path')}")
+        elif kind == "rotated":
+            self._append_log(f"Rotated to part {msg.get('part')}: {msg.get('path')}")
         elif kind == "progress":
             self._progress_label.setText(
                 f"Checked: {msg['attempts']:,}  ·  {msg['speed']:,.0f} addr/s  ·  "

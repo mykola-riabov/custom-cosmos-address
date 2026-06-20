@@ -64,6 +64,18 @@ class SearchConfig:
     no_private_key: bool = False
     pool: bool = False
     pool_workers: int = 2
+    per_file: int = 0
+
+
+def _split_output_name(path: str) -> str:
+    root, ext = os.path.splitext(path)
+    return root or path
+
+
+def _part_path(out_root: str, part_idx: int, per_file: int) -> str:
+    if per_file > 0:
+        return f"{out_root}_{part_idx:03d}.jsonl"
+    return f"{out_root}.jsonl"
 
 
 def _secure_chmod(path: str) -> None:
@@ -110,8 +122,7 @@ def run_search(config: SearchConfig, msg_queue: mp.Queue, stop_event: mp.Event) 
         }
     )
 
-    out_path = config.output
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    out_root = _split_output_name(config.output)
     include_secrets = not config.no_private_key
     pool_args = (config.prefix, config.suffix, hrp)
 
@@ -119,6 +130,33 @@ def run_search(config: SearchConfig, msg_queue: mp.Queue, stop_event: mp.Event) 
     found_count = 0
     start = time.time()
     last_progress_at = 0
+    current_part = 1
+    written_in_part = 0
+    current_path = _part_path(out_root, current_part, config.per_file)
+
+    def rotate_if_needed(out_f) -> Any:
+        nonlocal current_part, current_path, written_in_part
+        if config.per_file <= 0 or written_in_part < config.per_file:
+            return out_f
+        out_f.flush()
+        out_f.close()
+        current_part += 1
+        current_path = _part_path(out_root, current_part, config.per_file)
+        os.makedirs(os.path.dirname(current_path) or ".", exist_ok=True)
+        new_f = open(current_path, "a", encoding="utf-8")
+        _secure_chmod(current_path)
+        written_in_part = 0
+        msg_queue.put({"type": "rotated", "path": current_path, "part": current_part})
+        return new_f
+
+    def write_match(out_f, rec: dict[str, Any]) -> Any:
+        nonlocal found_count, written_in_part
+        out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        out_f.flush()
+        found_count += 1
+        written_in_part += 1
+        msg_queue.put({"type": "found", "record": rec, "found": found_count})
+        return rotate_if_needed(out_f)
 
     def emit_progress(*, force: bool = False, attempt_count: int | None = None) -> None:
         nonlocal last_progress_at
@@ -138,16 +176,16 @@ def run_search(config: SearchConfig, msg_queue: mp.Queue, stop_event: mp.Event) 
             }
         )
 
-    def process_batch(keys: list[bytes], mnemonics: list[str] | None, pool: mp.Pool | None) -> bool:
-        """Process one batch. Returns True if search should stop."""
-        nonlocal found_count, attempts
+    def process_batch(out_f, keys: list[bytes], mnemonics: list[str] | None, pool: mp.Pool | None) -> tuple[Any, bool]:
+        """Process one batch. Returns (file_handle, should_stop)."""
+        nonlocal attempts
 
         if pool is not None:
             work = [(i, k, *pool_args) for i, k in enumerate(keys)]
             checked_in_batch = 0
             for idx, addr in pool.imap_unordered(check_key_indexed, work, chunksize=256):
                 if stop_event.is_set():
-                    return True
+                    return out_f, True
                 checked_in_batch += 1
                 if checked_in_batch % _PROGRESS_EVERY == 0:
                     emit_progress(force=True, attempt_count=attempts + checked_in_batch)
@@ -159,17 +197,14 @@ def run_search(config: SearchConfig, msg_queue: mp.Queue, stop_event: mp.Event) 
                     mnemonics[idx] if mnemonics else None,
                     include_secrets=include_secrets,
                 )
-                out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                out_f.flush()
-                found_count += 1
-                msg_queue.put({"type": "found", "record": rec, "found": found_count})
+                out_f = write_match(out_f, rec)
                 if found_count >= config.count:
-                    return True
-            return stop_event.is_set()
+                    return out_f, True
+            return out_f, stop_event.is_set()
 
         for idx, priv in enumerate(keys):
             if stop_event.is_set():
-                return True
+                return out_f, True
             addr = try_match_privkey(priv, *pool_args)
             if idx and idx % _PROGRESS_EVERY == 0:
                 emit_progress(force=True, attempt_count=attempts + idx + 1)
@@ -181,49 +216,59 @@ def run_search(config: SearchConfig, msg_queue: mp.Queue, stop_event: mp.Event) 
                 mnemonics[idx] if mnemonics else None,
                 include_secrets=include_secrets,
             )
-            out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            out_f.flush()
-            found_count += 1
-            msg_queue.put({"type": "found", "record": rec, "found": found_count})
+            out_f = write_match(out_f, rec)
             if found_count >= config.count:
-                return True
-        return stop_event.is_set()
+                return out_f, True
+        return out_f, stop_event.is_set()
 
     try:
-        with open(out_path, "a", encoding="utf-8") as out_f:
-            _secure_chmod(out_path)
+        os.makedirs(os.path.dirname(current_path) or ".", exist_ok=True)
+        out_f = open(current_path, "a", encoding="utf-8")
+        _secure_chmod(current_path)
+        msg_queue.put(
+            {
+                "type": "output",
+                "path": current_path,
+                "pattern": f"{out_root}_*.jsonl" if config.per_file > 0 else current_path,
+                "per_file": config.per_file,
+            }
+        )
 
-            pool_ctx = (
-                _pool_mp_context().Pool(processes=config.pool_workers) if config.pool else None
-            )
-            try:
-                while found_count < config.count and not stop_event.is_set():
-                    keys, mnemonics = generate_keys_batch(
-                        config.batch,
-                        config.strength,
-                        mnemonic=config.mnemonic,
-                        derivation_path=config.path,
-                    )
-                    attempts += len(keys)
+        pool_ctx = _pool_mp_context().Pool(processes=config.pool_workers) if config.pool else None
+        try:
+            while found_count < config.count and not stop_event.is_set():
+                keys, mnemonics = generate_keys_batch(
+                    config.batch,
+                    config.strength,
+                    mnemonic=config.mnemonic,
+                    derivation_path=config.path,
+                )
+                attempts += len(keys)
 
-                    if process_batch(keys, mnemonics, pool_ctx):
-                        break
+                out_f, stop = process_batch(out_f, keys, mnemonics, pool_ctx)
+                if stop:
+                    break
 
-                    emit_progress(force=True)
-            finally:
-                if pool_ctx is not None:
-                    pool_ctx.close()
-                    pool_ctx.join()
+                emit_progress(force=True)
+        finally:
+            if pool_ctx is not None:
+                pool_ctx.close()
+                pool_ctx.join()
+            out_f.flush()
+            out_f.close()
 
+        output_desc = f"{out_root}_*.jsonl" if config.per_file > 0 else current_path
         if stop_event.is_set():
-            msg_queue.put({"type": "stopped", "attempts": attempts, "found": found_count})
+            msg_queue.put(
+                {"type": "stopped", "attempts": attempts, "found": found_count, "output": output_desc}
+            )
         else:
             msg_queue.put(
                 {
                     "type": "done",
                     "attempts": attempts,
                     "found": found_count,
-                    "output": out_path,
+                    "output": output_desc,
                 }
             )
     except Exception as e:

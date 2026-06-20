@@ -215,16 +215,44 @@ def jsonl_to_array_streaming(jsonl_path: str, array_path: str) -> None:
 
 
 def resolve_input_files(config: ScanConfig) -> list[str]:
-    if config.input_files:
-        return [f for f in config.input_files if os.path.isfile(f)]
     result_dir = os.path.abspath(config.result_dir)
     cache_path = os.path.abspath(config.cache_file)
+
+    def ok_file(path: str) -> bool:
+        return (
+            os.path.isfile(path)
+            and not os.path.basename(path).startswith("found_")
+            and not os.path.abspath(path).startswith(result_dir)
+            and os.path.abspath(path) != cache_path
+        )
+
+    if config.input_files:
+        files: list[str] = []
+        for entry in config.input_files:
+            entry = entry.strip()
+            if not entry:
+                continue
+            if os.path.isdir(entry):
+                for pattern in ("*.jsonl", "*.json"):
+                    for path in sorted(glob.glob(os.path.join(entry, pattern))):
+                        if ok_file(path):
+                            files.append(path)
+            elif ok_file(entry):
+                files.append(entry)
+        return sorted(set(files))
+
+    if os.path.isdir(config.input_glob):
+        files = []
+        for pattern in ("*.jsonl", "*.json"):
+            for path in sorted(glob.glob(os.path.join(config.input_glob, pattern))):
+                if ok_file(path):
+                    files.append(path)
+        return files
+
     return sorted(
         f
         for f in glob.glob(config.input_glob)
-        if not os.path.basename(f).startswith("found_")
-        and not os.path.abspath(f).startswith(result_dir)
-        and os.path.abspath(f) != cache_path
+        if ok_file(f)
     )
 
 
@@ -472,13 +500,17 @@ def run_scan(
             emit({"type": "error", "message": f"No input files found for '{config.input_glob}'."})
             return
 
-        emit(
+        _emit(
+            msg_queue,
             {
                 "type": "info",
                 "lcd": config.lcd_endpoint,
                 "denom": config.denom,
                 "files": wallet_files,
-            }
+                "cache_size": len(cache),
+                "cache_file": config.cache_file,
+            },
+            on_message,
         )
 
         total_skipped = 0

@@ -11,7 +11,7 @@ from bech32 import bech32_encode, convertbits
 from bip32_pure import BIP32
 from mnemonic import Mnemonic
 
-VERSION = "1.3.2-cpu"
+VERSION = "1.3.3-cpu"
 HARDENED_OFFSET = 0x80000000
 ALLOWED_BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 ALLOWED_STRENGTHS = [128, 160, 192, 224, 256]

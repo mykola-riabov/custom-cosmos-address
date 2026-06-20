@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -25,7 +27,7 @@ from gui.qt.found_wallets_table import FoundWalletsPanel
 from gui.qt.scan_runner import ScanThread
 from gui.qt.theme import get_colors
 from gui.qt.widgets import Card, form_row
-from scanner import ScanConfig
+from scanner import ScanConfig, resolve_input_files
 
 
 class ScannerPage(QWidget):
@@ -67,15 +69,21 @@ class ScannerPage(QWidget):
 
         input_card = Card("Input")
         self._input_path = QLineEdit(str(Path.home() / "addr_list.jsonl"))
-        browse_in = QPushButton("Browse")
+        browse_in = QPushButton("File")
         browse_in.clicked.connect(self._browse_input)
+        browse_dir = QPushButton("Folder")
+        browse_dir.clicked.connect(self._browse_input_dir)
         in_row = QHBoxLayout()
         in_row.addWidget(self._input_path, stretch=1)
         in_row.addWidget(browse_in)
+        in_row.addWidget(browse_dir)
         in_wrap = QWidget()
         in_wrap.setLayout(in_row)
-        input_card.body_layout.addLayout(form_row("Wallet file", in_wrap))
-        hint = QLabel("JSONL or JSON array from the generator (or glob like *.jsonl)")
+        input_card.body_layout.addLayout(form_row("Wallet source", in_wrap))
+        hint = QLabel(
+            "Single file, folder with *.jsonl, or glob (e.g. /data/wallets/*.jsonl). "
+            "Cache file skips addresses already checked — safe to stop and resume."
+        )
         hint.setObjectName("cardHint")
         input_card.body_layout.addWidget(hint)
         grid.addWidget(input_card, 1, 0)
@@ -164,6 +172,11 @@ class ScannerPage(QWidget):
         if path:
             self._input_path.setText(path)
 
+    def _browse_input_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Wallet folder", self._input_path.text() or str(Path.home()))
+        if path:
+            self._input_path.setText(path)
+
     def _browse_result_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Results directory", self._result_dir.text() or ".")
         if path:
@@ -182,32 +195,33 @@ class ScannerPage(QWidget):
 
     def _config_from_ui(self) -> ScanConfig:
         raw = self._input_path.text().strip()
-        if "*" in raw or "?" in raw:
-            return ScanConfig(
-                input_glob=raw,
-                lcd_endpoint=self._lcd.text().strip(),
-                denom=self._denom.text().strip(),
-                num_workers=int(self._workers.value()),
-                result_dir=self._result_dir.text().strip() or "found_wallets",
-                cache_file=self._cache_file.text().strip() or "checked_cache.json",
-            )
-        return ScanConfig(
-            input_files=[raw] if raw else [],
-            input_glob=raw,
+        base = ScanConfig(
             lcd_endpoint=self._lcd.text().strip(),
             denom=self._denom.text().strip(),
             num_workers=int(self._workers.value()),
             result_dir=self._result_dir.text().strip() or "found_wallets",
             cache_file=self._cache_file.text().strip() or "checked_cache.json",
         )
+        if not raw:
+            return base
+        if "*" in raw or "?" in raw:
+            base.input_glob = raw
+            return base
+        if os.path.isdir(raw):
+            base.input_files = [raw]
+            return base
+        base.input_files = [raw]
+        return base
 
     def _start(self) -> None:
         if self._scan_thread and self._scan_thread.isRunning():
             return
         try:
             config = self._config_from_ui()
-            if not config.input_files and not config.input_glob:
-                raise ValueError("Wallet file or glob is required.")
+            if not self._input_path.text().strip():
+                raise ValueError("Wallet file, folder, or glob is required.")
+            if not resolve_input_files(config):
+                raise ValueError("No wallet files found at the given path.")
             if not config.lcd_endpoint:
                 raise ValueError("LCD endpoint is required.")
             if not config.denom:
@@ -243,6 +257,11 @@ class ScannerPage(QWidget):
         kind = msg.get("type")
         if kind == "info":
             self._append_log(f"LCD: {msg.get('lcd')} | denom: {msg.get('denom')}")
+            cache_size = msg.get("cache_size", 0)
+            if cache_size:
+                self._append_log(
+                    f"Resume cache: {cache_size:,} address(es) in {msg.get('cache_file')} (will skip)"
+                )
             for f in msg.get("files", []):
                 self._append_log(f"  • {f}")
         elif kind == "file_start":
