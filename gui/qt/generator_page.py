@@ -1,0 +1,355 @@
+"""Vanity address generator page."""
+
+from __future__ import annotations
+
+import multiprocessing as mp
+import queue
+from pathlib import Path
+
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from cosmos_address import ALLOWED_STRENGTHS, estimate_difficulty, validate_pattern
+from gui.qt.theme import get_colors
+from gui.qt.widgets import Card, form_row
+from gui.worker import SearchConfig, start_search_process
+
+
+class GeneratorPage(QWidget):
+    def __init__(self, *, theme_name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._theme_name = theme_name
+        self._proc: mp.Process | None = None
+        self._msg_queue: mp.Queue | None = None
+        self._stop_event: mp.Event | None = None
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._poll_queue)
+        self._saw_worker_message = False
+        self._build_ui()
+
+    def set_theme_name(self, name: str) -> None:
+        self._theme_name = name
+        self._update_difficulty_hint()
+
+    def get_output_path(self) -> str:
+        return self._output.text().strip()
+
+    def _build_ui(self) -> None:
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        grid = QGridLayout(body)
+        grid.setContentsMargins(0, 0, 8, 0)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(12)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        scroll.setWidget(body)
+        outer.addWidget(scroll, stretch=1)
+
+        prog = Card("Progress")
+        self._progress_label = QLabel("Ready — configure settings and press Start")
+        prog.body_layout.addWidget(self._progress_label)
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 0)
+        self._progress_bar.setVisible(False)
+        prog.body_layout.addWidget(self._progress_bar)
+        grid.addWidget(prog, 0, 0, 1, 2)
+
+        pattern = Card("Pattern")
+        self._prefix = QLineEdit("osmo1")
+        self._suffix = QLineEdit()
+        pattern.body_layout.addLayout(form_row("Prefix", self._prefix))
+        pattern.body_layout.addLayout(form_row("Suffix", self._suffix))
+        self._prefix.textChanged.connect(self._update_difficulty_hint)
+        self._suffix.textChanged.connect(self._update_difficulty_hint)
+        grid.addWidget(pattern, 1, 0)
+
+        perf = Card("Performance")
+        self._batch = QSpinBox()
+        self._batch.setRange(100, 1_000_000)
+        self._batch.setSingleStep(1000)
+        self._batch.setValue(10_000)
+        self._count = QSpinBox()
+        self._count.setRange(1, 2_147_483_647)
+        self._count.setValue(1)
+        self._workers = QSpinBox()
+        self._workers.setRange(1, 64)
+        self._workers.setValue(2)
+        self._pool = QCheckBox("Multiprocessing")
+        perf.body_layout.addLayout(form_row("Batch size", self._batch))
+        perf.body_layout.addLayout(form_row("Target count", self._count))
+        perf.body_layout.addWidget(self._pool)
+        perf.body_layout.addLayout(form_row("Workers", self._workers))
+        grid.addWidget(perf, 1, 1)
+
+        wallet = Card("Wallet")
+        self._strength = QComboBox()
+        self._strength.addItems([str(s) for s in ALLOWED_STRENGTHS])
+        self._strength.setCurrentText("256")
+        self._path = QLineEdit("m/44'/118'/0'/0/0")
+        self._mnemonic = QCheckBox("BIP39 mnemonic mode")
+        wallet.body_layout.addLayout(form_row("Strength", self._strength))
+        wallet.body_layout.addLayout(form_row("Derivation path", self._path))
+        wallet.body_layout.addWidget(self._mnemonic)
+        grid.addWidget(wallet, 2, 0)
+
+        output = Card("Output")
+        self._output = QLineEdit(str(Path.home() / "addr_list.jsonl"))
+        browse = QPushButton("Browse")
+        browse.clicked.connect(self._browse_output)
+        path_row = QHBoxLayout()
+        path_row.addWidget(self._output, stretch=1)
+        path_row.addWidget(browse)
+        path_wrap = QWidget()
+        path_wrap.setLayout(path_row)
+        output.body_layout.addLayout(form_row("File path", path_wrap))
+        self._no_secrets = QCheckBox("Address only (no private keys in file)")
+        output.body_layout.addWidget(self._no_secrets)
+        hint = QLabel("Output files may contain secrets — keep them private")
+        hint.setObjectName("cardHint")
+        output.body_layout.addWidget(hint)
+        grid.addWidget(output, 2, 1)
+
+        log_card = Card("Activity log")
+        self._log = QTextEdit()
+        self._log.setObjectName("logView")
+        self._log.setReadOnly(True)
+        self._log.setMinimumHeight(180)
+        log_card.body_layout.addWidget(self._log)
+        grid.addWidget(log_card, 3, 0, 1, 2)
+        grid.setRowStretch(3, 1)
+
+        actions = QHBoxLayout()
+        self._start_btn = QPushButton("START SEARCH")
+        self._start_btn.setObjectName("accentBtn")
+        self._start_btn.clicked.connect(self._start)
+        self._stop_btn = QPushButton("STOP")
+        self._stop_btn.setObjectName("dangerBtn")
+        self._stop_btn.setEnabled(False)
+        self._stop_btn.clicked.connect(self._stop)
+        actions.addWidget(self._start_btn)
+        actions.addWidget(self._stop_btn)
+        actions.addStretch()
+        outer.addLayout(actions)
+
+        self._append_log("Configure pattern and press Start to generate vanity addresses.")
+
+    def update_difficulty_badge(self, badge: QLabel) -> None:
+        self._badge = badge
+        self._update_difficulty_hint()
+
+    def _browse_output(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Output JSONL",
+            self._output.text() or "addr_list.jsonl",
+            "JSON Lines (*.jsonl);;All files (*.*)",
+        )
+        if path:
+            self._output.setText(path)
+
+    def _update_difficulty_hint(self) -> None:
+        if not hasattr(self, "_badge"):
+            return
+        c = get_colors(self._theme_name)
+        try:
+            validate_pattern(self._prefix.text().strip(), self._suffix.text().strip())
+            d = estimate_difficulty(self._prefix.text().strip(), self._suffix.text().strip())
+            if d.constrained_chars == 0:
+                text = "Difficulty: trivial"
+                color = c["accent"]
+            else:
+                text = f"~{d.expected_attempts:,.0f} attempts · {d.constrained_chars} char(s)"
+                color = c["accent"]
+            self._badge.setText(text)
+            self._badge.setStyleSheet(
+                f"background-color: {c['card']}; color: {color}; "
+                f"border: 1px solid {c['border']}; border-radius: 8px; padding: 8px 14px;"
+            )
+        except ValueError as e:
+            self._badge.setText(str(e)[:48])
+            self._badge.setStyleSheet(
+                f"background-color: {c['card']}; color: {c['warning']}; "
+                f"border: 1px solid {c['border']}; border-radius: 8px; padding: 8px 14px;"
+            )
+
+    def _append_log(self, line: str) -> None:
+        self._log.append(line)
+
+    def _set_running(self, running: bool) -> None:
+        self._start_btn.setEnabled(not running)
+        self._stop_btn.setEnabled(running)
+        self._progress_bar.setVisible(running)
+
+    def _config_from_ui(self) -> SearchConfig:
+        return SearchConfig(
+            prefix=self._prefix.text().strip(),
+            suffix=self._suffix.text().strip(),
+            batch=int(self._batch.value()),
+            count=int(self._count.value()),
+            strength=int(self._strength.currentText()),
+            mnemonic=self._mnemonic.isChecked(),
+            path=self._path.text().strip(),
+            output=self._output.text().strip(),
+            no_private_key=self._no_secrets.isChecked(),
+            pool=self._pool.isChecked(),
+            pool_workers=int(self._workers.value()),
+        )
+
+    def _start(self) -> None:
+        if self._proc and self._proc.is_alive():
+            return
+        try:
+            config = self._config_from_ui()
+            validate_pattern(config.prefix, config.suffix)
+            if not config.output:
+                raise ValueError("Output file path is required.")
+        except ValueError as e:
+            QMessageBox.critical(self, "Invalid input", str(e))
+            return
+
+        self._saw_worker_message = False
+        self._append_log("——— Starting search ———")
+        self._set_running(True)
+        self._progress_label.setText("Starting worker…")
+
+        try:
+            self._proc, self._msg_queue, self._stop_event = start_search_process(config)
+        except Exception as e:
+            self._set_running(False)
+            self._progress_label.setText("Error")
+            QMessageBox.critical(self, "Error", f"Failed to start worker: {e}")
+            self._append_log(f"ERROR: failed to start worker: {e}")
+            return
+
+        self._append_log(f"Worker started (pid {self._proc.pid}). Generating keys…")
+        self._poll_timer.start(100)
+
+    def _cleanup_process(self, *, terminate: bool = False) -> None:
+        if self._stop_event:
+            self._stop_event.set()
+        if not self._proc:
+            return
+        if self._proc.is_alive():
+            self._proc.join(timeout=4 if not terminate else 0)
+        if terminate and self._proc.is_alive():
+            self._proc.terminate()
+            self._proc.join(timeout=2)
+        self._proc = None
+        self._msg_queue = None
+        self._stop_event = None
+
+    def _stop(self) -> None:
+        self._progress_label.setText("Stopping…")
+        self._append_log("Stop requested…")
+        self._cleanup_process(terminate=True)
+        self._poll_timer.stop()
+        self._set_running(False)
+        if self._progress_label.text() == "Stopping…":
+            self._progress_label.setText("Stopped")
+
+    def _poll_queue(self) -> None:
+        if not self._msg_queue:
+            return
+        try:
+            while True:
+                msg = self._msg_queue.get_nowait()
+                self._saw_worker_message = True
+                self._handle_message(msg)
+        except queue.Empty:
+            pass
+
+        if self._proc and not self._proc.is_alive():
+            self._proc.join(timeout=0.2)
+            self._drain_queue_once()
+            if not self._saw_worker_message:
+                self._handle_worker_failure(self._proc.exitcode)
+            self._cleanup_process()
+            self._poll_timer.stop()
+            self._set_running(False)
+            if self._progress_label.text() not in ("Done", "Stopped", "Error"):
+                self._progress_label.setText("Finished")
+
+    def _drain_queue_once(self) -> None:
+        if not self._msg_queue:
+            return
+        try:
+            while True:
+                msg = self._msg_queue.get_nowait()
+                self._saw_worker_message = True
+                self._handle_message(msg)
+        except queue.Empty:
+            pass
+
+    def _handle_worker_failure(self, exit_code: int | None) -> None:
+        message = (
+            f"Worker exited unexpectedly (code {exit_code}). "
+            "Try launching from terminal: cosmos-vanity-gui"
+        )
+        self._progress_label.setText("Error")
+        QMessageBox.critical(self, "Error", message)
+        self._append_log(f"ERROR: {message}")
+
+    def _handle_message(self, msg: dict) -> None:
+        kind = msg.get("type")
+        if kind == "info":
+            d = msg.get("difficulty", {})
+            self._append_log(f"HRP: {msg.get('hrp')} | constrained chars: {d.get('constrained_chars', 0)}")
+        elif kind == "progress":
+            self._progress_label.setText(
+                f"Checked: {msg['attempts']:,}  ·  {msg['speed']:,.0f} addr/s  ·  "
+                f"found {msg['found']}/{msg['target']}"
+            )
+        elif kind == "found":
+            rec = msg["record"]
+            self._append_log(f"✅ Found ({msg['found']}): {rec['address']}")
+            if "private_key" in rec:
+                self._append_log(f"   private_key: {rec['private_key']}")
+            if "mnemonic" in rec:
+                self._append_log(f"   mnemonic: {rec['mnemonic']}")
+        elif kind == "done":
+            self._progress_label.setText("Done")
+            self._set_running(False)
+            self._poll_timer.stop()
+            self._append_log(
+                f"Done. Found {msg['found']} / attempts {msg['attempts']:,}. Saved to {msg['output']}"
+            )
+        elif kind == "stopped":
+            self._progress_label.setText("Stopped")
+            self._set_running(False)
+            self._poll_timer.stop()
+            self._append_log(f"Stopped. Found {msg['found']}, attempts {msg['attempts']:,}")
+        elif kind == "error":
+            self._progress_label.setText("Error")
+            self._set_running(False)
+            self._poll_timer.stop()
+            QMessageBox.critical(self, "Error", msg.get("message", "Unknown error"))
+            self._append_log(f"ERROR: {msg.get('message')}")
+
+    def is_running(self) -> bool:
+        return self._proc is not None and self._proc.is_alive()
+
+    def request_stop(self) -> None:
+        if self.is_running():
+            self._stop()

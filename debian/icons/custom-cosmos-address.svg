@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Custom Cosmos Address">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6c5ce7"/>
+      <stop offset="100%" stop-color="#00b894"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="24" fill="url(#bg)"/>
+  <circle cx="64" cy="64" r="34" fill="none" stroke="#ffffff" stroke-width="6"/>
+  <path d="M64 34a30 30 0 1 0 0 60" fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
+  <text x="64" y="74" text-anchor="middle" font-family="sans-serif" font-size="28" font-weight="700" fill="#ffffff">C</text>
+</svg>

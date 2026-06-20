@@ -1,4 +1,4 @@
-"""Background search process for the GUI (keeps tkinter main thread responsive)."""
+"""Background search process for the GUI (keeps Qt main thread responsive)."""
 
 from __future__ import annotations
 
@@ -27,6 +27,28 @@ from cosmos_address import (  # noqa: E402
 )
 
 OUTPUT_MODE = 0o600
+_PROGRESS_EVERY = 2_000
+
+
+def _worker_mp_context() -> mp.context.BaseContext:
+    """Prefer forkserver on Linux for reliable GUI + multiprocessing."""
+    if sys.platform == "linux":
+        for method in ("forkserver", "spawn"):
+            try:
+                return mp.get_context(method)
+            except ValueError:
+                continue
+    return mp.get_context("spawn")
+
+
+def _pool_mp_context() -> mp.context.BaseContext:
+    """Worker subprocess has no Qt; fork is safe and faster on Linux."""
+    if sys.platform == "linux":
+        try:
+            return mp.get_context("fork")
+        except ValueError:
+            pass
+    return mp.get_context("spawn")
 
 
 @dataclass
@@ -96,6 +118,25 @@ def run_search(config: SearchConfig, msg_queue: mp.Queue, stop_event: mp.Event) 
     attempts = 0
     found_count = 0
     start = time.time()
+    last_progress_at = 0
+
+    def emit_progress(*, force: bool = False, attempt_count: int | None = None) -> None:
+        nonlocal last_progress_at
+        current = attempt_count if attempt_count is not None else attempts
+        if not force and current - last_progress_at < _PROGRESS_EVERY:
+            return
+        last_progress_at = current
+        elapsed = time.time() - start
+        speed = current / elapsed if elapsed > 0 else 0.0
+        msg_queue.put(
+            {
+                "type": "progress",
+                "attempts": current,
+                "speed": speed,
+                "found": found_count,
+                "target": config.count,
+            }
+        )
 
     def process_batch(keys: list[bytes], mnemonics: list[str] | None, pool: mp.Pool | None) -> bool:
         """Process one batch. Returns True if search should stop."""
@@ -103,9 +144,13 @@ def run_search(config: SearchConfig, msg_queue: mp.Queue, stop_event: mp.Event) 
 
         if pool is not None:
             work = [(i, k, *pool_args) for i, k in enumerate(keys)]
+            checked_in_batch = 0
             for idx, addr in pool.imap_unordered(check_key_indexed, work, chunksize=256):
                 if stop_event.is_set():
                     return True
+                checked_in_batch += 1
+                if checked_in_batch % _PROGRESS_EVERY == 0:
+                    emit_progress(force=True, attempt_count=attempts + checked_in_batch)
                 if not addr:
                     continue
                 rec = _build_record(
@@ -126,6 +171,8 @@ def run_search(config: SearchConfig, msg_queue: mp.Queue, stop_event: mp.Event) 
             if stop_event.is_set():
                 return True
             addr = try_match_privkey(priv, *pool_args)
+            if idx and idx % _PROGRESS_EVERY == 0:
+                emit_progress(force=True, attempt_count=attempts + idx + 1)
             if not addr:
                 continue
             rec = _build_record(
@@ -146,7 +193,9 @@ def run_search(config: SearchConfig, msg_queue: mp.Queue, stop_event: mp.Event) 
         with open(out_path, "a", encoding="utf-8") as out_f:
             _secure_chmod(out_path)
 
-            pool_ctx = mp.Pool(processes=config.pool_workers) if config.pool else None
+            pool_ctx = (
+                _pool_mp_context().Pool(processes=config.pool_workers) if config.pool else None
+            )
             try:
                 while found_count < config.count and not stop_event.is_set():
                     keys, mnemonics = generate_keys_batch(
@@ -160,17 +209,7 @@ def run_search(config: SearchConfig, msg_queue: mp.Queue, stop_event: mp.Event) 
                     if process_batch(keys, mnemonics, pool_ctx):
                         break
 
-                    elapsed = time.time() - start
-                    speed = attempts / elapsed if elapsed > 0 else 0.0
-                    msg_queue.put(
-                        {
-                            "type": "progress",
-                            "attempts": attempts,
-                            "speed": speed,
-                            "found": found_count,
-                            "target": config.count,
-                        }
-                    )
+                    emit_progress(force=True)
             finally:
                 if pool_ctx is not None:
                     pool_ctx.close()
@@ -194,7 +233,7 @@ def run_search(config: SearchConfig, msg_queue: mp.Queue, stop_event: mp.Event) 
 def start_search_process(
     config: SearchConfig,
 ) -> tuple[mp.Process, mp.Queue, mp.Event]:
-    ctx = mp.get_context("spawn")
+    ctx = _worker_mp_context()
     msg_queue: mp.Queue = ctx.Queue()
     stop_event = ctx.Event()
     # Non-daemon: pool mode spawns child workers inside run_search.

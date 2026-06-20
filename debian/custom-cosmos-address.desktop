@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Custom Cosmos Address
+GenericName=Cosmos Vanity Address Generator
+Comment=Generate custom Bech32 addresses for Cosmos SDK chains
+Exec=cosmos-vanity-gui
+Icon=custom-cosmos-address
+Terminal=false
+Type=Application
+Categories=Utility;Finance;
+Keywords=crypto;cosmos;wallet;vanity;osmo;bech32;
+StartupWMClass=custom-cosmos-address

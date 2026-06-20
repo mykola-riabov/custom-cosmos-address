@@ -78,12 +78,48 @@ Requires **tkinter** (usually bundled with Python on Linux; on Debian/Kali: `sud
 
 ```bash
 python3 -m gui
+# or after pip install -e .:
+cosmos-vanity-gui
 ```
 
-The GUI lives in the `gui/` folder and uses the same `cosmos_address` engine as the CLI.
+The GUI lives in the `gui/` folder and uses the same `cosmos_address` engine as the CLI.  
+The interface follows a **Stacer-inspired** layout: sidebar navigation, card panels, and a modern dark theme by default.
 
-Use **View → Theme** to switch themes (Mocha, Latte, Nord, Dracula, Forest, Solarized).  
+Use the **Theme** selector in the sidebar to switch palettes (21 built-in themes).  
 The settings panel scrolls with the mouse wheel on smaller screens.
+
+### 6. Install from `.deb` (Debian / Ubuntu / Kali)
+
+Build the package (requires `python3-venv`, `fakeroot`, and `dpkg-deb`):
+
+```bash
+sudo apt install python3-venv fakeroot
+./scripts/build-deb.sh
+```
+
+Install the generated package:
+
+```bash
+sudo apt install ./dist/custom-cosmos-address_*.deb
+```
+
+This installs:
+
+| Command | Purpose |
+|---------|---------|
+| `cosmos-vanity-gui` | Desktop GUI (also in application menu) |
+| `cosmos-vanity` | CLI generator |
+| `cosmos-scan` | Balance scanner |
+
+Runtime dependencies: `python3 (>= 3.10)` and `python3-tk`. Python libraries are bundled inside the package.
+
+Launch the GUI from the terminal or find **Custom Cosmos Address** in your desktop application menu.
+
+Uninstall:
+
+```bash
+sudo apt remove custom-cosmos-address
+```
 
 ---
 

@@ -2,8 +2,8 @@ ecdsa
 psutil
 bech32
 mnemonic
-bip32
 ijson
 pycryptodome
 requests
 tqdm
+PySide6>=6.5

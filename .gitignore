@@ -6,6 +6,9 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+*.egg-info/
+dist/
+build/
 
 # Screenshots and local assets
 *.png

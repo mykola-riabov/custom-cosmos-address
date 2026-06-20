@@ -1,6 +1,10 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "custom-cosmos-address"
-version = "1.1.0"
+version = "1.3.2"
 description = "CPU vanity address generator for Cosmos SDK chains"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -9,17 +13,24 @@ dependencies = [
     "psutil",
     "bech32",
     "mnemonic",
-    "bip32",
     "ijson",
     "pycryptodome",
     "requests",
     "tqdm",
+    "PySide6>=6.5",
 ]
 
 [project.scripts]
 cosmos-vanity = "main:main"
 cosmos-scan = "scan:main"
 cosmos-vanity-gui = "gui.app:main"
+
+[tool.setuptools]
+py-modules = ["cosmos_address", "main", "scan", "scanner", "bip32_pure"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gui*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
