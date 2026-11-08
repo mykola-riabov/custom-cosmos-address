@@ -23,8 +23,7 @@ def test(pool: bool) -> None:
         prefix="osmo1a",
         batch=800,
         count=1,
-        pool=pool,
-        pool_workers=2,
+        workers=2 if pool else 1,
         output=f"/tmp/entry-pool-{pool}.jsonl",
     )
     proc, q, stop = start_search_process(cfg)

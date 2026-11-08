@@ -17,7 +17,6 @@ def main() -> None:
     app = MainWindow()
     app._prefix.setText("osmo1a")
     app._batch.setValue(800)
-    app._pool.setChecked(True)
     app._workers.setValue(2)
     app._output.setText("/tmp/gui-pool-fixed.jsonl")
     app._start()

@@ -27,6 +27,7 @@ from cosmos_address import ALLOWED_STRENGTHS, estimate_difficulty, validate_patt
 from gui.qt.theme import get_colors
 from gui.qt.widgets import Card, form_row
 from gui.worker import SearchConfig, start_search_process
+from search_engine import default_workers
 from workspace import WorkspaceLayout, default_workspace, ensure_workspace
 
 _MAX_MSGS_PER_TICK = 80
@@ -103,20 +104,20 @@ class GeneratorPage(QWidget):
 
         perf = Card("Performance")
         self._batch = QSpinBox()
-        self._batch.setRange(100, 1_000_000)
-        self._batch.setSingleStep(1000)
-        self._batch.setValue(10_000)
+        self._batch.setRange(10, 1_000_000)
+        self._batch.setSingleStep(100)
+        self._batch.setValue(500)
+        self._batch.setToolTip("Keys each worker checks between progress reports and Stop checks.")
         self._count = QSpinBox()
         self._count.setRange(1, 2_147_483_647)
         self._count.setValue(1)
         self._workers = QSpinBox()
-        self._workers.setRange(1, 64)
-        self._workers.setValue(2)
-        self._pool = QCheckBox("Multiprocessing")
-        perf.body_layout.addLayout(form_row("Batch size", self._batch))
-        perf.body_layout.addLayout(form_row("Target count", self._count))
-        perf.body_layout.addWidget(self._pool)
+        self._workers.setRange(1, 256)
+        self._workers.setValue(default_workers())
+        self._workers.setToolTip("Processes; each one generates and checks keys on its own. Default: CPU count.")
         perf.body_layout.addLayout(form_row("Workers", self._workers))
+        perf.body_layout.addLayout(form_row("Target count", self._count))
+        perf.body_layout.addLayout(form_row("Report every", self._batch))
         grid.addWidget(perf, 1, 1)
 
         wallet = Card("Wallet")
@@ -125,9 +126,17 @@ class GeneratorPage(QWidget):
         self._strength.setCurrentText("256")
         self._path = QLineEdit("m/44'/118'/0'/0/0")
         self._mnemonic = QCheckBox("BIP39 mnemonic mode")
+        self._index_search = QCheckBox("Fast: one phrase per worker, search the address index")
+        self._index_search.setToolTip(
+            "Keeps one phrase and tries the last path number 0, 1, 2… — as fast as raw keys. "
+            "The found path is saved with the result: open it in the wallet with that account/index."
+        )
+        self._index_search.setEnabled(False)
+        self._mnemonic.toggled.connect(self._index_search.setEnabled)
         wallet.body_layout.addLayout(form_row("Strength", self._strength))
         wallet.body_layout.addLayout(form_row("Derivation path", self._path))
         wallet.body_layout.addWidget(self._mnemonic)
+        wallet.body_layout.addWidget(self._index_search)
         grid.addWidget(wallet, 2, 0)
 
         output = Card("Output")
@@ -267,11 +276,11 @@ class GeneratorPage(QWidget):
             count=int(self._count.value()),
             strength=int(self._strength.currentText()),
             mnemonic=self._mnemonic.isChecked(),
+            index_search=self._mnemonic.isChecked() and self._index_search.isChecked(),
             path=self._path.text().strip(),
             output=self.get_output_path(),
             no_private_key=self._no_secrets.isChecked(),
-            pool=self._pool.isChecked(),
-            pool_workers=int(self._workers.value()),
+            workers=int(self._workers.value()),
             per_file=int(self._per_file.value()),
         )
 
@@ -316,7 +325,7 @@ class GeneratorPage(QWidget):
         if not self._proc:
             return
         if self._proc.is_alive():
-            self._proc.join(timeout=4 if not terminate else 0)
+            self._proc.join(timeout=4)
         if terminate and self._proc.is_alive():
             self._proc.terminate()
             self._proc.join(timeout=2)
@@ -372,6 +381,9 @@ class GeneratorPage(QWidget):
         if kind == "info":
             d = msg.get("difficulty", {})
             self._append_log(f"HRP: {msg.get('hrp')} | constrained chars: {d.get('constrained_chars', 0)}")
+            self._append_log(
+                f"Workers: {msg.get('workers')} | mode: {msg.get('mode')} | curve: {msg.get('backend')}"
+            )
         elif kind == "output":
             if msg.get("per_file", 0) > 0:
                 self._append_log(
@@ -398,6 +410,8 @@ class GeneratorPage(QWidget):
                 self._append_log(f"   private_key: {rec['private_key']}")
             if "mnemonic" in rec:
                 self._append_log(f"   mnemonic: {rec['mnemonic']}")
+            if "path" in rec:
+                self._append_log(f"   path: {rec['path']}")
         elif kind == "done":
             self._progress_label.setText("Done")
             self._set_running(False)

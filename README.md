@@ -14,10 +14,16 @@
 - Vanity matching by:
   - `--prefix` (address must start with a given string)
   - `--suffix` (address must end with a given string)
-- Two generation modes:
+- Three generation modes:
   - **Fast mode**: random private keys (maximum speed)
-  - **Mnemonic mode**: BIP39 + derivation path (deterministic, recoverable)
-- Multiprocessing support for address filtering
+  - **Mnemonic mode**: a new BIP39 phrase per attempt (slow: PBKDF2 with 2048 rounds per phrase)
+  - **Index search** (`--mnemonic --index-search`): one BIP39 phrase per worker, then the last
+    path index 0, 1, 2… — as fast as fast mode and still recoverable from the phrase; the found
+    path (for example `m/44'/118'/0'/0/1749`) is saved with the result
+- Parallel workers: each worker process generates, derives and checks keys on its own; only
+  matches cross processes, so speed grows with the number of workers (default: CPU count)
+- Elliptic-curve math through the system **libsecp256k1** (the library Bitcoin Core uses) when it
+  is installed, pure-Python `ecdsa` otherwise
 - Streaming output (low memory usage)
 - Output formats:
   - **JSONL** (default, recommended)
@@ -34,6 +40,21 @@
 
 - Python **3.10+** recommended
 - Dependencies listed in `requirements.txt` (`pycryptodome` provides RIPEMD160 on OpenSSL 3 systems)
+- Recommended: `sudo apt install libsecp256k1-6` (or the `libsecp256k1-*` runtime of your release).
+  Without it the program works through pure-Python `ecdsa`, about ten times slower per core.
+  `SECP256K1_LIBRARY=/path/libsecp256k1.so` picks a library, `SECP256K1_DISABLE=1` forces the fallback.
+
+Measured on a 16-thread desktop CPU (prefix search, 2026-11-08):
+
+| Mode | 1.3.5 (1 process) | 1.4.0, 1 worker | 1.4.0, 16 workers |
+|------|------------------:|----------------:|------------------:|
+| Fast (random key) | 2,600/s | 25,700/s | 213,000/s |
+| Index search | — | 22,900/s | 198,000/s |
+| Mnemonic (new phrase each time) | 630/s | 1,200/s | 9,000/s |
+
+In 1.3.5 the Workers value was used only with the Multiprocessing box, and even then only the
+address check ran in the pool while one process generated every key: random-key mode reached about
+20,000/s on 16 workers, and in mnemonic mode the workers waited for the single generator.
 
 Install dependencies:
 
@@ -54,10 +75,10 @@ pytest
 python3 main.py --prefix osmo1abc --suffix xyz --batch 100000 --count 1
 ```
 
-### 2. Fast mode with multiprocessing
+### 2. Choose the number of workers
 
 ```bash
-python3 main.py --prefix osmo1abc --batch 200000 --pool --pool-workers 4
+python3 main.py --prefix osmo1abc --workers 8
 ```
 
 ### 3. Mnemonic (HD wallet) mode
@@ -65,6 +86,15 @@ python3 main.py --prefix osmo1abc --batch 200000 --pool --pool-workers 4
 ```bash
 python3 main.py --prefix cosmos1gpt --mnemonic --strength 256 --count 1
 ```
+
+Fast and recoverable — one phrase per worker, the address index is searched:
+
+```bash
+python3 main.py --prefix cosmos1gpt --mnemonic --index-search --count 1
+```
+
+Write down the phrase **and** the saved `path`. In Keplr: import the phrase, open
+*Advanced* → HD path and set the address index (the last number of the path).
 
 ### 4. Custom derivation path (mnemonic mode only)
 
@@ -137,13 +167,13 @@ sudo apt remove custom-cosmos-address
 |--------|-------------|---------|
 | `--prefix` | Required address prefix | `osmo1` |
 | `--suffix` | Required address suffix | empty |
-| `--batch` | Keys generated per iteration | `10000` |
+| `--batch` | Keys each worker checks between progress reports and stop checks | `500` |
 | `--count` | Stop after N matches | `1` |
 | `--strength` | Entropy bits (128–256); fast mode expands to 32-byte key | `256` |
 | `--mnemonic` | Enable BIP39 mnemonic mode | off |
 | `--path` | Derivation path (mnemonic mode) | `m/44'/118'/0'/0/0` |
-| `--pool` | Enable multiprocessing | off |
-| `--pool-workers` | Worker process count | `2` |
+| `--index-search` | With `--mnemonic`: scan the last path index of one phrase per worker | off |
+| `--workers` | Worker processes (`--pool-workers` still accepted; `--pool` is ignored) | CPU count |
 | `--no-private-key` | Write address only (no secrets in output) | off |
 | `--force-output` | Append without confirmation if output exists | off |
 | `--output` | Base output filename | `addr_list.jsonl` |
@@ -160,7 +190,7 @@ sudo apt remove custom-cosmos-address
 Each line is a standalone JSON object:
 
 ```json
-{"address":"osmo1…","private_key":"<hex>","mnemonic":"<optional>"}
+{"address":"osmo1…","private_key":"<hex>","mnemonic":"<optional>","path":"<mnemonic modes>"}
 ```
 
 Advantages:

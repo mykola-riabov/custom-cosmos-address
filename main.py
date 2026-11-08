@@ -18,16 +18,16 @@ except ImportError as e:
     print(f"❌ Missing dependency: {e.name}")
     sys.exit(1)
 
+import secp
 from cosmos_address import (
     ALLOWED_STRENGTHS,
     VERSION,
-    check_key_indexed,
     estimate_difficulty,
-    generate_keys_batch,
     hrp_from_prefix,
-    try_match_privkey,
+    make_matcher,
     validate_pattern,
 )
+from search_engine import Job, SearchEngine, default_workers, random_privkey
 
 OUTPUT_MODE = 0o600
 
@@ -39,7 +39,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--prefix", type=str, default="osmo1", help="Address must start with this string.")
     parser.add_argument("--suffix", type=str, default="", help="Address must end with this string.")
-    parser.add_argument("--batch", type=int, default=10_000, help="Keys per CPU batch")
+    parser.add_argument(
+        "--batch",
+        type=int,
+        default=500,
+        help="Keys each worker checks between progress reports and stop checks",
+    )
     parser.add_argument(
         "--output",
         type=str,
@@ -66,9 +71,22 @@ def parse_args() -> argparse.Namespace:
         choices=ALLOWED_STRENGTHS,
         help="Entropy bits (mnemonic: BIP39; fast: input expanded to 32-byte key)",
     )
-    parser.add_argument("--pool", action="store_true", help="Enable multiprocessing for filtering")
-    parser.add_argument("--pool-workers", type=int, default=2, help="Worker process count")
+    parser.add_argument(
+        "--workers",
+        "--pool-workers",
+        dest="workers",
+        type=int,
+        default=default_workers(),
+        help="Worker processes; each generates and checks keys on its own (default: CPU count)",
+    )
+    parser.add_argument("--pool", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--mnemonic", action="store_true", help="BIP39 + derivation path")
+    parser.add_argument(
+        "--index-search",
+        action="store_true",
+        help="With --mnemonic: one phrase per worker, scan the last path index (fast). "
+        "The found path is saved with the result.",
+    )
     parser.add_argument("--path", type=str, default="m/44'/118'/0'/0/0", help="Derivation path (--mnemonic)")
     parser.add_argument(
         "--no-private-key",
@@ -118,13 +136,21 @@ def format_duration(seconds: float) -> str:
     return f"{seconds / 86400:.1f} days"
 
 
-def warmup_speed(prefix: str, suffix: str, hrp: str, batch: int = 2_000) -> float:
-    keys, _ = generate_keys_batch(batch, 256, mnemonic=False)
+def warmup_speed(prefix: str, suffix: str, batch: int = 2_000) -> float:
+    """Single-core address checks per second (random-key mode)."""
+    matcher = make_matcher(prefix, suffix)
+    keys = [random_privkey(256) for _ in range(batch)]
     t0 = time.perf_counter()
     for priv in keys:
-        try_match_privkey(priv, prefix, suffix, hrp)
+        matcher(priv)
     elapsed = time.perf_counter() - t0
     return batch / elapsed if elapsed > 0 else 0.0
+
+
+def search_mode(args: argparse.Namespace) -> str:
+    if not args.mnemonic:
+        return "key"
+    return "index" if args.index_search else "mnemonic"
 
 
 def warn_existing_outputs(out_root: str, force: bool) -> None:
@@ -165,18 +191,15 @@ def jsonl_files_to_json_arrays(out_root: str) -> None:
         secure_chmod(array_path)
 
 
-def build_record(
-    addr: str,
-    priv: bytes,
-    mnemonic: str | None,
-    *,
-    include_secrets: bool,
-) -> dict:
-    rec: dict = {"address": addr}
+def build_record(found: dict, *, include_secrets: bool) -> dict:
+    """Output record from an engine match; secrets dropped unless asked for. The path is not secret."""
+    rec: dict = {"address": found["address"]}
     if include_secrets:
-        rec["private_key"] = priv.hex()
-        if mnemonic:
-            rec["mnemonic"] = mnemonic
+        rec["private_key"] = found["private_key"]
+        if found.get("mnemonic"):
+            rec["mnemonic"] = found["mnemonic"]
+    if found.get("path"):
+        rec["path"] = found["path"]
     return rec
 
 
@@ -190,6 +213,12 @@ def main() -> None:
     if args.per_file < 0:
         print("❌ --per-file must be >= 0")
         sys.exit(1)
+    if args.workers < 1 or args.batch < 1:
+        print("❌ --workers and --batch must be >= 1")
+        sys.exit(1)
+    if args.index_search and not args.mnemonic:
+        print("❌ --index-search needs --mnemonic")
+        sys.exit(1)
 
     try:
         validate_pattern(args.prefix, args.suffix)
@@ -202,7 +231,6 @@ def main() -> None:
     out_root, _ = split_output_name(args.output)
     warn_existing_outputs(out_root, args.force_output)
 
-    attempts = 0
     start = time.time()
     last_log = start
     found_count = 0
@@ -236,10 +264,9 @@ def main() -> None:
     def write_jsonl(obj: dict) -> None:
         out_f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
-    def handle_match(idx: int, priv: bytes, mnemonics: list[str] | None, addr: str) -> bool:
+    def handle_match(found: dict) -> bool:
         nonlocal found_count, written_in_part
-        mnemonic = mnemonics[idx] if mnemonics is not None else None
-        rec = build_record(addr, priv, mnemonic, include_secrets=include_secrets)
+        rec = build_record(found, include_secrets=include_secrets)
         write_jsonl(rec)
         found_count += 1
         written_in_part += 1
@@ -248,13 +275,20 @@ def main() -> None:
         print(f"🔗 Address : {rec['address']}")
         if include_secrets:
             print(f"🔐 Private Key : {rec['private_key']}")
-            if mnemonic:
+            if rec.get("mnemonic"):
                 print(f"🧠 Mnemonic    : {rec['mnemonic']}")
+        if rec.get("path"):
+            print(f"📍 Path        : {rec['path']}")
         return found_count >= args.count
+
+    engine: SearchEngine | None = None
 
     def on_interrupt(sig, frame) -> None:
         if mp.current_process().name != "MainProcess":
             return
+        if engine is not None:
+            engine.stop()
+        attempts = engine.attempts if engine is not None else 0
         elapsed = time.time() - start
         print("\n🛑 Interrupted by user")
         print(f"🔁 Attempts : {attempts:,}")
@@ -278,13 +312,16 @@ def main() -> None:
         f"🔐 Strength: {args.strength} bits "
         f"({'BIP39 entropy' if args.mnemonic else 'fast-mode input; privkey always 32 bytes'})"
     )
-    print(f"📦 Batch   : {args.batch:,} keys")
+    print(f"📦 Report  : every {args.batch:,} keys per worker")
     print(f"🔁 Target  : {args.count} match(es)")
-    print(f"🧠 Mnemonic: {'enabled' if args.mnemonic else 'disabled'}")
+    mode = search_mode(args)
+    print(
+        "🧠 Mnemonic: "
+        + {"key": "disabled", "mnemonic": "new phrase per attempt", "index": "one phrase per worker, index scan"}[mode]
+    )
     if args.mnemonic:
-        print(f"📍 Path    : {args.path}")
-    if args.pool:
-        print(f"🧵 Pool    : enabled with {args.pool_workers} process(es)")
+        print(f"📍 Path    : {args.path}" + (" (last index scanned)" if mode == "index" else ""))
+    print(f"🧵 Workers : {args.workers} process(es) · curve backend: {secp.BACKEND}")
     print(f"💾 Output  : {out_root}*.jsonl (format={args.output_format}, per_file={args.per_file})")
     if args.no_private_key:
         print("🔒 Secrets : not written to output (--no-private-key)")
@@ -301,42 +338,39 @@ def main() -> None:
             print("   ⚠️  Prefix and suffix overlap — estimate may be optimistic.")
 
     print("⏳ Warmup benchmark...", flush=True)
-    speed_est = warmup_speed(args.prefix, args.suffix, hrp)
-    if speed_est > 0 and diff.expected_attempts > 1:
-        eta = diff.expected_attempts / speed_est
-        print(f"⚡ Est. speed: {speed_est:,.0f} addr/sec | ETA (mean): ~{format_duration(eta)}")
-    elif speed_est > 0:
-        print(f"⚡ Est. speed: {speed_est:,.0f} addr/sec")
+    speed_est = warmup_speed(args.prefix, args.suffix)
+    if speed_est > 0 and mode != "mnemonic":
+        total = speed_est * args.workers
+        line = f"⚡ Est. speed: ~{speed_est:,.0f} addr/sec per worker (up to ~{total:,.0f} total)"
+        if diff.expected_attempts > 1:
+            line += f" | ETA (mean): ~{format_duration(diff.expected_attempts / total)}"
+        print(line)
     print()
 
-    pool_args = (args.prefix, args.suffix, hrp)
-
+    job = Job(
+        matcher=make_matcher(args.prefix, args.suffix),
+        mode=mode,
+        strength=args.strength,
+        path=args.path,
+        report_every=args.batch,
+    )
     try:
+        engine = SearchEngine(job, args.workers).start()
+        start = time.time()
         while found_count < args.count:
-            keys, mnemonics = generate_keys_batch(
-                args.batch,
-                args.strength,
-                mnemonic=args.mnemonic,
-                derivation_path=args.path,
-            )
-            attempts += len(keys)
-
-            if args.pool:
-                work = [(i, k, *pool_args) for i, k in enumerate(keys)]
-                with mp.Pool(processes=args.pool_workers) as pool:
-                    for idx, addr in pool.imap_unordered(
-                        check_key_indexed, work, chunksize=256
-                    ):
-                        if addr and handle_match(idx, keys[idx], mnemonics, addr):
-                            break
-            else:
-                for idx, priv in enumerate(keys):
-                    addr = try_match_privkey(priv, *pool_args)
-                    if addr and handle_match(idx, priv, mnemonics, addr):
-                        break
-
+            try:
+                found = engine.next_match(timeout=0.5)
+            except RuntimeError as e:
+                print(f"\n❌ Worker failed: {e}")
+                sys.exit(1)
+            if found and handle_match(found):
+                break
+            if not engine.alive():
+                print("\n❌ All workers exited unexpectedly")
+                sys.exit(1)
             now = time.time()
             if now - last_log >= 1:
+                attempts = engine.attempts
                 elapsed = now - start
                 speed = attempts / elapsed if elapsed > 0 else 0.0
                 print(
@@ -346,6 +380,8 @@ def main() -> None:
                 )
                 last_log = now
     finally:
+        if engine is not None:
+            engine.stop()
         try:
             out_f.flush()
             out_f.close()

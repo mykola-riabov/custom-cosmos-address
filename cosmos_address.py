@@ -5,19 +5,22 @@ from __future__ import annotations
 import hashlib
 import os
 from dataclasses import dataclass
+from functools import partial
+from typing import Callable
 
-import ecdsa
 from bech32 import bech32_encode, convertbits
-from bip32_pure import BIP32
+from bip32_pure import BIP32, parse_path
 from mnemonic import Mnemonic
 
-VERSION = "1.3.5-cpu"
+import secp
+
+VERSION = "1.4.0-cpu"
 HARDENED_OFFSET = 0x80000000
 ALLOWED_BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 ALLOWED_STRENGTHS = [128, 160, 192, 224, 256]
 BECH32_CHARSET_SIZE = 32
 
-_CURVE_ORDER = ecdsa.SECP256k1.order
+_CURVE_ORDER = secp.CURVE_ORDER
 _MNEMO = Mnemonic("english")
 
 
@@ -62,10 +65,7 @@ def hrp_from_prefix(prefix: str) -> str:
 
 
 def privkey_to_address(priv_bytes: bytes, hrp: str) -> str:
-    sk = ecdsa.SigningKey.from_string(priv_bytes, curve=ecdsa.SECP256k1)
-    vk = sk.get_verifying_key()
-    pub_raw = vk.to_string()
-    pubkey = (b"\x02" + pub_raw[:32]) if (pub_raw[-1] % 2 == 0) else (b"\x03" + pub_raw[:32])
+    pubkey = secp.pubkey_compressed(priv_bytes)
     h1 = hashlib.sha256(pubkey).digest()
     h2 = _ripemd160(h1)
     return bech32_encode(hrp, convertbits(h2, 8, 5))
@@ -125,9 +125,7 @@ def mnemonic_to_privkey(strength_bits: int, derivation_path: str) -> tuple[bytes
     words = _MNEMO.to_mnemonic(entropy_bytes)
     seed = _MNEMO.to_seed(words)
     bip32 = BIP32.from_seed(seed)
-    path = derivation_path.lstrip("m/").split("/")
-    path = [int(p.replace("'", "")) + HARDENED_OFFSET if "'" in p else int(p) for p in path]
-    return bip32.get_privkey_from_path(path), words
+    return bip32.get_privkey_from_path(parse_path(derivation_path)), words
 
 
 def generate_keys_batch(
@@ -153,3 +151,8 @@ def check_key_indexed(
 ) -> tuple[int, str | None]:
     idx, priv_bytes, prefix, suffix, hrp = item
     return idx, try_match_privkey(priv_bytes, prefix, suffix, hrp)
+
+
+def make_matcher(prefix: str, suffix: str) -> Callable[[bytes], str | None]:
+    """Picklable `priv -> address or None` for the search engine."""
+    return partial(try_match_privkey, prefix=prefix, suffix=suffix, hrp=hrp_from_prefix(prefix))
