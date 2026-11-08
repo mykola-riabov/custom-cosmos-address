@@ -14,7 +14,7 @@ from mnemonic import Mnemonic
 
 import secp
 
-VERSION = "1.4.0-cpu"
+VERSION = "1.4.1-cpu"
 HARDENED_OFFSET = 0x80000000
 ALLOWED_BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 ALLOWED_STRENGTHS = [128, 160, 192, 224, 256]
